@@ -581,6 +581,10 @@ import bcrypt from "bcryptjs";
 import OpenAI from "openai";
 import { google } from "googleapis";
 import crypto from "node:crypto";
+// JAICE v2 addons
+import { classify } from "./server/addons/classifier.js";
+import { planLayout } from "./server/addons/planner.js";
+import { bind as bindReport } from "./server/addons/binder.js";
 
 dotenv.config({ path: path.resolve(process.cwd(), ".env"), override: true });
 
@@ -596,6 +600,8 @@ const config = {
     embeddingModel: process.env.EMBEDDING_MODEL || "text-embedding-3-small",
     answerModel: process.env.ANSWER_MODEL || "gpt-4o-mini",
     defaultTopK: Number(process.env.DEFAULT_TOPK) || 50,
+    plannerModel: process.env.OPENAI_MODEL_PLANNER || process.env.PLANNER_MODEL || null,
+    extractModel: process.env.OPENAI_MODEL_EXTRACT || process.env.EXTRACT_MODEL || null,
   },
   pinecone: {
     apiKey: process.env.PINECONE_API_KEY,
@@ -619,6 +625,9 @@ const config = {
     startDelayMs: Number(process.env.AUTO_INGEST_DELAY_MS || 2000),
     syncIntervalMs: Number(process.env.AUTO_SYNC_INTERVAL_MS || 3600000),
   },
+  features: {
+    v2Pipeline: String(process.env.ANSWER_PIPELINE_V2||'0') === '1'
+  }
 };
 
 const logger = {
@@ -882,6 +891,91 @@ app.use(session({
   saveUninitialized: false,
   cookie: { httpOnly: true, sameSite: "lax", secure: config.server.secureCookies, maxAge: 1000*60*60*8 }
 }));
+
+// === JAICE v2 Query API (SSE) ===
+app.post('/api/query', requireSession, async (req, res) => {
+  try{
+    const body = req.body || {};
+    const query = String(body.query||body.userQuery||'').trim();
+    const clientId = String(body.clientId || req.session?.activeClientId || 'sample_client_1');
+    const userId = body.userId || null;
+    const sessionId = body.sessionId || req.sessionID || null;
+    const stream = (body.stream !== false);
+    const topK = Number(body.topK || process.env.PINECONE_TOPK || config.ai.defaultTopK || 50);
+    const forcePlan = body.forcePlan || null;
+    const forceBlocks = Array.isArray(body.forceBlocks)? body.forceBlocks : null;
+
+    if (!query) { res.status(400).json({ error:'query required' }); return; }
+
+    const signalsObj = classify(query, { clientId });
+
+    if (!stream){
+      // Non-streaming: run plan+bind sequentially and return final
+      const planned = await planLayout({ query, signals: signalsObj.signals, forcePlan, forceBlocks, model: config.ai.plannerModel, apiKey: config.ai.openaiKey });
+      const events = [];
+      for await (const ev of bindReport({
+        plan: planned.layout,
+        query,
+        clientId,
+        topK,
+        searchFns: { embed: embedTexts, pineconeQuery, openai },
+        textModel: config.ai.extractModel || config.ai.answerModel
+      })) { events.push(ev); }
+      const final = events.find(e=>e.type==='final') || { layout: [] };
+      res.json({ phase:'final', type:'report', layout: final.layout, citations: final.citations||[], plan: planned.plan, signals: signalsObj.signals });
+      return;
+    }
+
+    // Streaming via SSE
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+      'Connection': 'keep-alive'
+    });
+
+    const send = (event, data) => {
+      res.write(`event: ${event}\n`);
+      res.write(`data: ${JSON.stringify(data)}\n\n`);
+    };
+
+    // meta
+    send('meta', { phase:'classify', signals: signalsObj.signals, plan: signalsObj.type==='rich'?'rich':'simple', confidence: signalsObj.confidence });
+
+    // plan
+    const planned = await planLayout({ query, signals: signalsObj.signals, forcePlan, forceBlocks, model: config.ai.plannerModel, apiKey: config.ai.openaiKey });
+    send('plan', { phase:'plan', layout: planned.layout });
+
+    // bind progressive
+    (async () => {
+      try{
+        for await (const ev of bindReport({
+          plan: planned.layout,
+          query,
+          clientId,
+          topK,
+          searchFns: { embed: embedTexts, pineconeQuery, openai },
+          textModel: config.ai.extractModel || config.ai.answerModel
+        })){
+          if (ev.type==='partial') send('partial', Object.assign({ phase:'bind' }, ev));
+          if (ev.type==='final') send('final', Object.assign({ phase:'final', type:'report' }, ev));
+        }
+      }catch(e){ send('error', { phase:'error', message: String(e?.message||e) }); }
+      finally{ res.end(); }
+    })();
+  }catch(err){
+    try{ res.write(`event: error\n`); res.write(`data: ${JSON.stringify({ phase:'error', message:String(err?.message||err) })}\n\n`); }catch(_){ }
+    try{ res.end(); }catch(_){ }
+  }
+});
+
+// Health endpoint for v2
+app.get('/api/query/health', async (req, res) => {
+  const out = { ok:true, v2Enabled: !!config.features.v2Pipeline, pinecone:false, openai:false, drive:false };
+  try{ out.openai = !!config.ai.openaiKey; } catch(_){ }
+  try{ out.pinecone = !!(config.pinecone.apiKey && config.pinecone.indexHost); } catch(_){ }
+  try{ out.drive = !!(config.drive.rootFolderId); } catch(_){ }
+  res.json(out);
+});
 
 const CONFIG_DIR = path.resolve(process.cwd(), "config");
 const USERS_PATH = path.join(CONFIG_DIR, "users.json");

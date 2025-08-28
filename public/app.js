@@ -575,24 +575,8 @@ async function performSearch(refresh = false) {
 
     console.log('📡 Sending search request:', requestBody);
 
-    const response = await fetch('/search', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(requestBody)
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.error || 'Search failed');
-    }
-
-    const results = await response.json();
-    console.log('✅ Search results received:', results);
-    
-    switchToResultsLayout();
-    displayResults(results);
+    // Prefer v2 streaming pipeline
+    await runQueryStreaming({ query, clientId: currentClient, topK: 50 });
 
   } catch (error) {
     console.error('❌ Search failed:', error);
@@ -1875,4 +1859,127 @@ function addToExistingReport(reportId, content, title) {
     console.error('Error adding to report:', error);
     alert('Error adding to report');
   });
+}
+
+// --- JAICE v2 streaming client ---
+function ReportRenderer_mount(){
+  const container = document.getElementById('dashboardFlow');
+  container.innerHTML = '';
+  return {
+    renderPlan(layout){
+      switchToResultsLayout();
+      const host = document.getElementById('dashboardFlow');
+      host.innerHTML = '';
+      layout.forEach((blk, idx) => {
+        const el = renderBlockSkeleton(blk);
+        el.dataset.__idx = idx;
+        host.appendChild(el);
+      });
+    },
+    applyPartial(targetIndex, blocks){
+      const host = document.getElementById('dashboardFlow');
+      const placeholder = host.querySelector(`[data-__idx="${targetIndex}"]`);
+      if (!placeholder) return;
+      const fragment = document.createDocumentFragment();
+      blocks.forEach(b => fragment.appendChild(renderBlock(b)));
+      host.replaceChild(fragment, placeholder);
+    },
+    renderFinal(layout){
+      const host = document.getElementById('dashboardFlow');
+      host.innerHTML = '';
+      layout.forEach(b => host.appendChild(renderBlock(b)));
+      const dashboard = document.getElementById('dashboard');
+      if (dashboard) dashboard.style.display = 'block';
+    }
+  };
+}
+
+function renderBlockSkeleton(blk){
+  const card = document.createElement('div');
+  card.className = 'block-card';
+  card.innerHTML = `<div class="skeleton" style="height: ${blk.kind==='headline'?'28px':'16px'}; background:#f3f4f6; border-radius:8px; width:${blk.kind==='headline'?'60%':'100%'}"></div>`;
+  return card;
+}
+
+function renderBlock(blk){
+  if (blk.kind === 'group'){
+    const wrap = document.createElement('div');
+    wrap.className = `block-group ${blk.cols===3?'cols-3':''}`;
+    (blk.blocks||[]).forEach(inner => wrap.appendChild(renderBlock(inner)));
+    return wrap;
+  }
+  const card = document.createElement('div');
+  card.className = 'block-card';
+  if (blk.kind === 'headline'){
+    const h = document.createElement('div');
+    h.className = 'block-headline';
+    h.textContent = blk.text || '';
+    card.appendChild(h);
+  } else if (blk.kind === 'text'){
+    const p = document.createElement('div');
+    p.className = 'block-text';
+    p.textContent = blk.text || '';
+    card.appendChild(p);
+  } else if (blk.kind === 'quote'){
+    const q = document.createElement('div'); q.className = 'block-quote';
+    q.textContent = `“${blk.text}”`;
+    if (blk.speaker || blk.role){
+      const meta = document.createElement('div'); meta.className = 'meta';
+      meta.textContent = blk.role ? blk.role : (blk.speaker||'');
+      card.appendChild(q); card.appendChild(meta);
+    } else { card.appendChild(q); }
+  } else if (blk.kind === 'slide'){
+    const s = document.createElement('div'); s.className = 'block-slide';
+    const img = document.createElement('img');
+    img.src = `/secure-slide/${encodeURIComponent(blk.reportId)}/${blk.page}`;
+    s.appendChild(img); card.appendChild(s);
+  } else if (blk.kind === 'table'){
+    const t = document.createElement('table'); t.className='block-table';
+    const thead = document.createElement('thead'); const tr = document.createElement('tr');
+    (blk.columns||[]).forEach(c=>{ const th=document.createElement('th'); th.textContent=c.label; tr.appendChild(th); });
+    thead.appendChild(tr); t.appendChild(thead);
+    const tbody = document.createElement('tbody');
+    (blk.rows||[]).forEach(r=>{ const row=document.createElement('tr'); (blk.columns||[]).forEach(c=>{ const td=document.createElement('td'); td.textContent = String(r[c.key] ?? ''); row.appendChild(td); }); tbody.appendChild(row); });
+    t.appendChild(tbody); card.appendChild(t);
+  } else if (blk.kind === 'chart'){
+    // Adapt to existing renderChart API
+    const div = document.createElement('div');
+    const id = `chart_${Math.random().toString(36).slice(2)}`;
+    div.id = id; div.style.height = '240px';
+    card.appendChild(div);
+    setTimeout(()=>{ try{ if (window.renderChart) { const dataset = { title: blk.title||'Chart', series: (blk.series||[]).flatMap(s=> (s.points||[]).map(p=>({ label: String(p.x), value: Number(p.y)||0 }))) }; window.renderChart(id, dataset); } }catch(e){ console.warn('chart render failed', e); } }, 0);
+  }
+  return card;
+}
+
+async function runQueryStreaming({ query, clientId, topK }){
+  switchToResultsLayout();
+  const mount = ReportRenderer_mount();
+  const params = { query, clientId, topK, stream:true };
+  const resp = await fetch('/api/query', { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(params) });
+  if (!resp.ok || !resp.body) { console.warn('Streaming unavailable; falling back'); return; }
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+  while(true){
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream:true });
+    let idx;
+    while ((idx = buffer.indexOf('\n\n')) >= 0){
+      const chunk = buffer.slice(0, idx); buffer = buffer.slice(idx+2);
+      const lines = chunk.split('\n');
+      let event = 'message'; let data = '';
+      for (const line of lines){
+        if (line.startsWith('event:')) event = line.slice(6).trim();
+        else if (line.startsWith('data:')) data += line.slice(5).trim();
+      }
+      try{
+        const obj = JSON.parse(data||'{}');
+        if (event==='plan'){ mount.renderPlan(obj.layout||[]); }
+        else if (event==='partial'){ mount.applyPartial(obj.targetIndex, obj.blocks||[]); }
+        else if (event==='final'){ mount.renderFinal(obj.layout||[]); }
+      }catch(e){ console.warn('SSE parse error', e); }
+    }
+  }
 }
