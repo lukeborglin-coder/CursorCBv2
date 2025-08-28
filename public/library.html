@@ -1,0 +1,875 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Library - JAICE</title>
+  <link rel="icon" type="image/png" href="/favicon-32x32.png" sizes="32x32">
+  <link rel="icon" type="image/png" href="/favicon-16x16.png" sizes="16x16">
+  <link rel="stylesheet" href="modern-bridge.css">
+  <link rel="stylesheet" href="styles.css">
+  
+  <style>
+    :root {
+      --jaice-orange: #D14829;
+      --bg-primary: #f7f8fb;
+      --text-primary: #111827;
+      --text-muted: #6b7280;
+      --border: #e5e7eb;
+      --white: #ffffff;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      background: var(--bg-primary);
+      margin: 0;
+      padding: 0;
+    }
+
+    /* Exact header CSS copied from index.html */
+    .header {
+      position: sticky;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 70px;
+      background: white;
+      border-bottom: 1px solid var(--border);
+      z-index: 1000;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 32px;
+      box-shadow: var(--shadow-soft);
+    }
+
+    /* Logo on left */
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      text-decoration: none;
+      color: var(--text-primary);
+      flex-shrink: 0;
+    }
+
+    .logo img {
+      height: 32px;
+      width: auto;
+    }
+
+    .beta-badge {
+      background: transparent;
+      border: 1px solid #9ca3af;
+      color: #6b7280;
+      font-size: 8px;
+      font-weight: 700;
+      padding: 2px 6px;
+      border-radius: 4px;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      box-shadow: none;
+    }
+
+    /* CENTERED NAVIGATION */
+    .main-nav {
+      position: absolute;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      align-items: center;
+      gap: 40px;
+    }
+
+    .nav-link {
+      display: flex;
+      align-items: center;
+      padding: 12px 20px;
+      color: var(--text-primary);
+      text-decoration: none;
+      font-weight: 500;
+      font-size: 16px;
+      border-radius: 8px;
+      transition: all 0.2s ease;
+      position: relative;
+    }
+
+    .nav-link:hover {
+      background: #f8f9fa;
+      color: var(--jaice-orange);
+    }
+
+    .nav-link.active {
+      color: var(--jaice-orange);
+      font-weight: 600;
+      border-bottom: 2px solid var(--jaice-orange);
+    }
+
+    /* Right side - user info and profile */
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      position: relative;
+      z-index: 1001;
+      flex-shrink: 0;
+    }
+
+    .user-info {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      color: var(--text-muted);
+      font-size: 14px;
+    }
+
+    .profile {
+      position: relative;
+      z-index: 1002;
+    }
+
+    .profile-btn {
+      width: 36px;
+      height: 36px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: white;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-muted);
+    }
+
+    .profile-btn:hover {
+      border-color: var(--jaice-orange);
+      color: var(--jaice-orange);
+    }
+
+    .profile-menu {
+      position: absolute;
+      right: 0;
+      top: calc(100% + 4px);
+      background: white;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
+      padding: 8px 0;
+      min-width: 180px;
+      display: none;
+      z-index: 1003;
+    }
+
+    .profile-menu a,
+    .profile-menu button {
+      display: block;
+      width: 100%;
+      padding: 12px 16px;
+      text-decoration: none;
+      color: var(--text-primary);
+      background: none;
+      border: none;
+      text-align: left;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background-color 0.15s ease;
+    }
+
+    .profile-menu a:hover,
+    .profile-menu button:hover {
+      background-color: #f8f9fa;
+    }
+
+    .company-name {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--jaice-orange);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 32px;
+    }
+
+    .page-header {
+      margin-bottom: 32px;
+    }
+
+    .page-title {
+      font-size: 32px;
+      font-weight: 700;
+      color: var(--text-primary);
+      margin: 0 0 8px 0;
+    }
+
+    .page-subtitle {
+      font-size: 16px;
+      color: var(--text-muted);
+      margin: 0;
+    }
+
+    .client-selector {
+      background: var(--white);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 32px;
+    }
+
+    .client-selector label {
+      display: block;
+      font-weight: 600;
+      margin-bottom: 8px;
+      color: var(--text-primary);
+    }
+
+    .client-selector select {
+      width: 300px;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--white);
+      color: var(--text-primary);
+      font-size: 14px;
+    }
+
+    .projects-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+      gap: 24px;
+      margin-top: 24px;
+    }
+
+    .project-card {
+      background: var(--white);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+      overflow: hidden;
+      transition: all 0.2s ease;
+    }
+    .card-expand{
+      display:flex;align-items:center;justify-content:center;margin-top:8px;color:var(--text-muted);font-size:12px;cursor:pointer
+    }
+    .card-expand svg{width:16px;height:16px}
+
+    .project-card:hover {
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
+      transform: translateY(-2px);
+    }
+
+    .project-name {
+      font-size: 18px;
+      font-weight: 600;
+      color: #fff;
+      background: #D14829;
+      margin: -24px -24px 16px -24px;
+      padding: 16px 24px;
+      border-top-left-radius: 12px;
+      border-top-right-radius: 12px;
+    }
+
+    .project-meta {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+
+    .meta-item {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .meta-label {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-muted);
+      margin-bottom: 4px;
+    }
+
+    .meta-value {
+      font-size: 14px;
+      color: var(--text-primary);
+      font-weight: 500;
+    }
+
+    .project-files {
+      margin-bottom: 20px;
+    }
+
+    .files-header {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+
+    .file-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .file-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 8px;
+      background: #f8f9fa;
+      border-radius: 6px;
+      font-size: 13px;
+    }
+
+    .file-icon {
+      width: 16px;
+      height: 16px;
+      background: var(--jaice-orange);
+      border-radius: 3px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      font-size: 10px;
+      font-weight: bold;
+    }
+
+    .file-name {
+      flex: 1;
+      color: var(--text-primary);
+    }
+
+    .file-type {
+      font-size: 11px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+    }
+
+    .project-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .tag {
+      background: rgba(209, 72, 41, 0.1);
+      color: var(--jaice-orange);
+      padding: 4px 8px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 500;
+      border: 1px solid rgba(209, 72, 41, 0.2);
+    }
+
+    .insights-section {
+      margin-top: 16px;
+      padding-top: 16px;
+      border-top: 1px solid var(--border);
+    }
+
+    .insights-header {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+
+    .insights-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+
+    .insights-list li {
+      font-size: 13px;
+      color: var(--text-primary);
+      margin-bottom: 6px;
+      padding-left: 12px;
+      position: relative;
+    }
+
+    .insights-list li:before {
+      content: '•';
+      color: var(--jaice-orange);
+      position: absolute;
+      left: 0;
+      top: 0;
+    }
+
+    .loading-state {
+      text-align: center;
+      padding: 64px 32px;
+      color: var(--text-muted);
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 64px 32px;
+      color: var(--text-muted);
+    }
+
+    .empty-state h3 {
+      color: var(--text-primary);
+      margin-bottom: 8px;
+    }
+  </style>
+</head>
+<body>
+  <!-- Header matching other pages -->
+  <header class="header">
+    <!-- Logo on Left -->
+    <div style="display: flex; align-items: center; gap: 12px;">
+      <a class="logo" href="/">
+        <img alt="Jaice" src="/assets/Slide1.JPG"/>
+      </a>
+      <span class="beta-badge">BETA</span>
+    </div>
+    <!-- Centered Navigation -->
+    <nav class="main-nav">
+      <a class="nav-link" href="/">Home</a>
+      <a class="nav-link active" href="/library.html">Library</a>
+      <a class="nav-link" href="/reports.html">Reports</a>
+      <a class="nav-link" href="/admin" id="adminNavLink" style="display: none;">Admin</a>
+    </nav>
+    <!-- Right Side - User Info & Profile -->
+    <div class="header-right">
+      <div class="user-info">
+        <span id="userDisplay">Loading...</span>
+      </div>
+      <div class="company-name" id="companyNameDisplay" style="display: none;">GENENTECH</div>
+      <div class="profile">
+        <button class="profile-btn" id="profileBtn">
+          <svg fill="currentColor" height="16" viewbox="0 0 24 24" width="16">
+            <path d="M12 12c2.761 0 5-2.239 5-5S14.761 2 12 2 7 4.239 7 7s2.239 5 5 5zm0 2c-4.418 0-8 2.239-8 5v1h16v-1c0-2.761-3.582-5-8-5z"></path>
+          </svg>
+        </button>
+        <div class="profile-menu" id="profileMenu">
+          <a href="/admin" id="adminCenterLink" style="display: none;">Admin Center</a>
+          <button id="logoutBtn" type="button">Sign Out</button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <div class="container">
+    <div class="page-header">
+      <h1 class="page-title">Client Library</h1>
+      <p class="page-subtitle">Browse and manage your research projects and documents</p>
+    </div>
+
+    <div class="client-selector">
+      <label for="libraryClientSelect">Select Client Library:</label>
+      <select id="libraryClientSelect">
+        <option value="">Choose a client library...</option>
+      </select>
+    </div>
+
+    <div id="projectsContainer">
+      <div class="loading-state">
+        <p>Select a client library to view projects</p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let currentProjects = [];
+    let availableLibraries = [];
+    let currentUser = null;
+
+    // Check authentication and user role
+    async function checkAuth() {
+      try {
+        const response = await fetch('/me', { credentials: 'include' });
+        if (!response.ok) {
+          window.location.href = '/login.html';
+          return false;
+        }
+        
+        const payload = await response.json();
+        console.log('Current /me payload:', payload);
+        currentUser = payload && payload.user ? payload.user : payload; // support both shapes
+        
+        // Update user display
+        const userDisplay = document.getElementById('userDisplay');
+        if (userDisplay) {
+          const roleDisplay = currentUser && currentUser.role ? currentUser.role : 'user';
+          userDisplay.textContent = `${currentUser && currentUser.username ? currentUser.username : 'User'} (${roleDisplay})`;
+        }
+
+        // Show admin elements if admin
+        if (currentUser && String(currentUser.role||'').toLowerCase() === 'admin') {
+          const adminNav = document.getElementById('adminNavLink');
+          const adminCenter = document.getElementById('adminCenterLink');
+          if (adminNav) adminNav.style.display = 'block';
+          if (adminCenter) adminCenter.style.display = 'block';
+        }
+        
+        return true;
+      } catch (error) {
+        console.error('Auth check failed:', error);
+        window.location.href = '/login.html';
+        return false;
+      }
+    }
+
+    // Load client libraries on page load
+    async function loadClientLibraries() {
+      try {
+        // Use the same endpoint as the home page
+        const response = await fetch('/api/client-libraries', {
+          credentials: 'include'
+        });
+        
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        
+        let libraries = await response.json();
+        
+        // Filter libraries based on client access
+        if (window.currentUser && window.currentUser.role === 'client') {
+          const clientLibrary = window.currentUser.library || window.currentUser.libraryId || window.currentUser.clientLibrary;
+          if (clientLibrary) {
+            libraries = libraries.filter(lib => lib.id === clientLibrary || lib.name === clientLibrary);
+          } else {
+            libraries = []; // No library assigned, show none
+          }
+        }
+        
+        availableLibraries = libraries;
+        
+        const select = document.getElementById('libraryClientSelect');
+        select.innerHTML = '<option value="">Choose a client library...</option>';
+        
+        libraries.forEach(lib => {
+          const option = document.createElement('option');
+          option.value = lib.id;
+          option.textContent = lib.name;
+          select.appendChild(option);
+        });
+        
+      } catch (error) {
+        console.error('Failed to load client libraries:', error);
+        // Show error message in the dropdown area
+        document.getElementById('projectsContainer').innerHTML = 
+          '<div class="empty-state"><h3>Error loading client libraries</h3><p>Please check your permissions and try again.</p></div>';
+      }
+    }
+
+    // Load projects for selected library
+    async function loadLibraryProjects(clientId) {
+      const container = document.getElementById('projectsContainer');
+      
+      if (!clientId) {
+        container.innerHTML = '<div class="loading-state"><p>Select a client library to view projects</p></div>';
+        return;
+      }
+
+      container.innerHTML = '<div class="loading-state"><p>Loading projects...</p></div>';
+
+      try {
+        // Use the new library structure API endpoint
+        console.log('Loading projects for client:', clientId);
+        const response = await fetch(`/api/libraries/${encodeURIComponent(clientId)}/projects`, {
+          credentials: 'include'
+        });
+        
+        console.log('Projects API response:', response.status, response.ok);
+        
+        if (!response.ok) {
+          // Fallback to filter-options for now during transition
+          console.warn('Projects endpoint not available, using fallback data');
+          const fallbackResponse = await fetch(`/api/filter-options?clientId=${encodeURIComponent(clientId)}`, {
+            credentials: 'include'
+          });
+          
+          if (!fallbackResponse.ok) {
+            throw new Error(`HTTP ${fallbackResponse.status}`);
+          }
+          
+          const fallbackData = await fallbackResponse.json();
+          console.log('Fallback data:', fallbackData);
+          const mockProjects = createMockProjectsFromStructure(fallbackData);
+          renderProjects(mockProjects);
+          return;
+        }
+        
+        const projects = await response.json();
+        console.log('Library projects:', projects);
+        
+        // Convert backend format to frontend format
+        const formattedProjects = projects.map(project => ({
+          name: project.name,
+          month: project.month || 'Unknown',
+          year: project.year || new Date().getFullYear(),
+          methodology: project.methodology || 'Research Study',
+          sample: project.sample || 'Study participants',
+          fieldwork: project.fieldwork || 'Not specified',
+          background: project.background || '',
+          files: project.folderStructure ? formatFilesFromStructure(project.folderStructure) : [],
+          tags: project.tags || [],
+          insights: project.insights || []
+        }));
+        
+        renderProjects(formattedProjects);
+        
+      } catch (error) {
+        console.error('Failed to load projects:', error);
+        container.innerHTML = '<div class="empty-state"><h3>Error loading projects</h3><p>Please try again later</p></div>';
+      }
+    }
+
+    // Create mock projects based on new Google Drive structure
+    function createMockProjectsFromStructure(filterData) {
+      const projects = [];
+      
+      // Create sample projects that match your actual naming patterns
+      const years = filterData.years || ['2024'];
+      const methodologies = filterData.methodology || ['Clinical Research', 'Strategy Analysis'];
+      
+      // Sample projects based on your examples
+      const sampleProjects = [
+        {
+          name: '2024 SMA Evrysdi ATU W6',
+          month: 'June',
+          year: '2024',
+          methodology: 'Clinical Research',
+          sample: 'SMA patients (ATU program)',
+          fieldwork: 'Week 6 assessment',
+          background: 'Spinal Muscular Atrophy treatment assessment under Autorisation Temporaire d\'Utilisation program',
+          files: [
+            { name: '2024 SMA Evrysdi ATU W6 Protocol.pdf', type: 'QNR', icon: 'Q', folder: 'QNR' },
+            { name: 'SMA Patient Data W6.xlsx', type: 'Data', icon: 'D', folder: 'Data' },
+            { name: '2024 SMA Evrysdi ATU W6 Report.pdf', type: 'Report', icon: 'R', folder: 'Reports' },
+            { name: 'Regulatory Submission.pdf', type: 'Other', icon: 'O', folder: 'Other' }
+          ],
+          tags: ['SMA', 'Evrysdi', 'ATU', 'Clinical', 'Week 6', '2024', 'Roche'],
+          insights: [
+            'Positive motor function improvements observed at Week 6',
+            'Patient reported outcomes show quality of life enhancement',
+            'Safety profile consistent with previous studies',
+            'ATU program enrollment targets exceeded by 15%'
+          ]
+        },
+        {
+          name: '340B Rebate Model Strategy',
+          month: 'September',
+          year: '2024',
+          methodology: 'Strategic Analysis',
+          sample: '340B covered entities nationwide',
+          fieldwork: 'Q3 2024 analysis period',
+          background: '340B Drug Pricing Program rebate optimization and compliance strategy development',
+          files: [
+            { name: '340B Program Requirements.pdf', type: 'QNR', icon: 'Q', folder: 'QNR' },
+            { name: '340B Rebate Calculations.xlsx', type: 'Data', icon: 'D', folder: 'Data' },
+            { name: '340B Strategy Model.xlsx', type: 'Data', icon: 'D', folder: 'Data' },
+            { name: '340B Rebate Model Strategy Report.pdf', type: 'Report', icon: 'R', folder: 'Reports' },
+            { name: 'Compliance Guidelines.pdf', type: 'Other', icon: 'O', folder: 'Other' }
+          ],
+          tags: ['340B', 'Rebate Model', 'Strategy', 'Compliance', 'Healthcare', '2024', 'Pricing'],
+          insights: [
+            'Current rebate model achieves 92% compliance rate',
+            'Opportunity for $2.3M additional savings identified',
+            'Automation could reduce processing time by 40%',
+            'Risk mitigation strategies implemented for audit readiness'
+          ]
+        }
+      ];
+
+      return sampleProjects;
+    }
+
+    // Render projects grid
+    function renderProjects(projects) {
+      const container = document.getElementById('projectsContainer');
+      
+      if (projects.length === 0) {
+        container.innerHTML = '<div class="empty-state"><h3>No projects found</h3><p>No projects available for this client library</p></div>';
+        return;
+      }
+
+      // Group by year and render year headers
+      const groups = projects.reduce((acc, p) => {
+        const y = String(p.year || '').trim() || 'Unknown';
+        acc[y] = acc[y] || [];
+        acc[y].push(p);
+        return acc;
+      }, {});
+      const years = Object.keys(groups).sort((a,b)=>{
+        const na = Number(a); const nb = Number(b);
+        const aNum = Number.isFinite(na); const bNum = Number.isFinite(nb);
+        if (aNum && bNum) return nb - na; // both numeric, desc
+        if (aNum && !bNum) return -1;     // numeric first
+        if (!aNum && bNum) return 1;      // Unknown last
+        return 0;
+      });
+
+      const wrapper = document.createElement('div');
+      wrapper.innerHTML='';
+      years.forEach(y => {
+        const hdr = document.createElement('div');
+        hdr.textContent = y;
+        hdr.style.cssText = 'margin:16px 0 8px 0;color:#6b7280;font-weight:700;border-bottom:1px solid var(--border);padding-bottom:4px;';
+        wrapper.appendChild(hdr);
+        const grid = document.createElement('div');
+        grid.className = 'projects-grid';
+        // Sort projects within the year by month desc (fallback name)
+        const m2n = (s)=>{ if(!s) return 0; const m=String(s).slice(0,3).toLowerCase(); const map={jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12}; return map[m]||0; };
+        groups[y].sort((p1,p2)=>{
+          const m1=m2n(p1.month), m2=m2n(p2.month);
+          if (m2!==m1) return m2-m1;
+          // tie-breaker: name desc for stability
+          return String(p1.name||'').localeCompare(String(p2.name||''));
+        }).forEach(project => grid.appendChild(createProjectCard(project)));
+        wrapper.appendChild(grid);
+      });
+
+      container.innerHTML = '';
+      container.appendChild(wrapper);
+    }
+
+    // Create individual project card
+    function createProjectCard(project) {
+      const card = document.createElement('div');
+      card.className = 'project-card';
+      
+      card.innerHTML = `
+        <h3 class="project-name">${project.name}</h3>
+        
+        <div class="project-meta">
+          <div class="meta-item">
+            <div class="meta-label">Date</div>
+            <div class="meta-value">${project.month} ${project.year}</div>
+          </div>
+          <div class="meta-item">
+            <div class="meta-label">Methodology</div>
+            <div class="meta-value">${Array.isArray(project.methodologies) && project.methodologies.length ? project.methodologies.join(', ') : project.methodology}</div>
+          </div>
+          <div class="meta-item">
+            <div class="meta-label">Sample</div>
+            <div class="meta-value">${project.sample}</div>
+          </div>
+          <div class="meta-item">
+            <div class="meta-label">Fieldwork</div>
+            <div class="meta-value">${project.fieldwork}</div>
+          </div>
+        </div>
+        
+        <div class="card-expand" onclick="(function(btn){ const det=btn.parentElement.querySelector('.card-details'); if(!det) return; const open=det.style.display!=='none'; det.style.display=open?'none':'block'; btn.querySelector('svg').style.transform=open?'rotate(0deg)':'rotate(180deg)'; })(this)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+        </div>
+
+        <div class="card-details" style="display:none; margin-top:8px;">
+          ${project.background ? `
+          <div class="background-section">
+            <div class="meta-label">Background</div>
+            <p style="font-size: 13px; color: var(--text-primary); margin: 4px 0 16px 0; line-height: 1.4;">${project.background}</p>
+          </div>
+          ` : ''}
+
+          <div class="insights-section">
+            <div class="insights-header">Key Insights</div>
+            <ul class="insights-list">
+              ${Array.isArray(project.insights) ? project.insights.map(insight => `<li>${insight}</li>`).join('') : ''}
+            </ul>
+          </div>
+
+          <div class="project-files" style="margin-top:16px;">
+            <div class="files-header" style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;" onclick="this.nextElementSibling.style.display = (this.nextElementSibling.style.display==='none'?'block':'none'); this.querySelector('span.chev').textContent = (this.nextElementSibling.style.display==='none'?'▶':'▼')">
+              <span>Project Files</span>
+              <span class="chev" style="font-size:12px;color:var(--text-muted);">▶</span>
+            </div>
+            <div class="file-list" style="display:none;">
+              ${project.files.map(file => `
+                <div class="file-item">
+                  <div class="file-icon">${file.icon}</div>
+                  <div class="file-name">${file.name}</div>
+                  <div class="file-type">${file.type}</div>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        </div>
+      `;
+      
+      return card;
+    }
+
+    // Helper function to format files from folder structure
+    function formatFilesFromStructure(folderStructure) {
+      const files = [];
+      
+      // Add files from each folder type
+      Object.entries(folderStructure).forEach(([folderType, folderFiles]) => {
+        folderFiles.forEach(file => {
+          files.push({
+            name: file.name,
+            type: folderType,
+            icon: folderType.charAt(0).toUpperCase(),
+            folder: folderType
+          });
+        });
+      });
+      
+      return files;
+    }
+
+    // Event listeners
+    document.getElementById('libraryClientSelect').addEventListener('change', (e) => {
+      loadLibraryProjects(e.target.value);
+    });
+
+    // Initialize profile menu
+    function initializeProfileMenu() {
+      const profileBtn = document.getElementById('profileBtn');
+      const profileMenu = document.getElementById('profileMenu');
+      const logoutBtn = document.getElementById('logoutBtn');
+
+      if (profileBtn && profileMenu) {
+        profileBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          profileMenu.style.display = profileMenu.style.display === 'block' ? 'none' : 'block';
+        });
+
+        // Close menu when clicking outside
+        document.addEventListener('click', () => {
+          profileMenu.style.display = 'none';
+        });
+      }
+
+      if (logoutBtn) {
+        logoutBtn.addEventListener('click', async () => {
+          try {
+            await fetch('/auth/logout', { method: 'POST', credentials: 'include' });
+            window.location.href = '/login.html';
+          } catch (error) {
+            console.error('Logout failed:', error);
+            window.location.href = '/login.html';
+          }
+        });
+      }
+    }
+
+    // Initialize page
+    document.addEventListener('DOMContentLoaded', async () => {
+      const isAuthed = await checkAuth();
+      if (isAuthed) {
+        initializeProfileMenu();
+        await loadClientLibraries();
+      }
+    });
+  </script>
+</body>
+</html>

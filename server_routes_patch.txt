@@ -1,0 +1,126 @@
+/* =========================  REPORTS SYSTEM (file-backed)  =========================
+   Drop this block into server.js ONE TIME. Recommended location: after your auth/session
+   middleware and before static file serving. Search for "APP ROUTES" and paste below it.
+
+   Persistence: ./data/reports.json  (auto-created). Scoped per logged-in account.
+   User key: req.session.user?.username || req.session.user?.id || req.session.username
+   ================================================================================= */
+import fs from 'fs';
+import path from 'path';
+
+const REPORTS_DB_PATH = path.join(process.cwd(), 'data', 'reports.json');
+
+function ensureReportsDB(){
+  const dir = path.dirname(REPORTS_DB_PATH);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  if (!fs.existsSync(REPORTS_DB_PATH)) fs.writeFileSync(REPORTS_DB_PATH, JSON.stringify({ version:1, reports: [] }, null, 2));
+}
+function readReports(){
+  ensureReportsDB();
+  try{ return JSON.parse(fs.readFileSync(REPORTS_DB_PATH, 'utf8')); }
+  catch{ return { version:1, reports: [] }; }
+}
+function writeReports(db){
+  ensureReportsDB();
+  fs.writeFileSync(REPORTS_DB_PATH, JSON.stringify(db, null, 2));
+}
+function getUserKey(req){
+  const u = req.session && (req.session.user || {});
+  return u.username || u.id || req.session?.username || 'anonymous';
+}
+function now(){ return Date.now(); }
+function uid(){ return Math.random().toString(36).slice(2) + now().toString(36); }
+
+// GET /api/reports  -> list current user's reports (most recent first)
+app.get('/api/reports', (req, res) => {
+  try{
+    const userKey = getUserKey(req);
+    const db = readReports();
+    const list = db.reports.filter(r => r.ownerKey === userKey);
+    list.sort((a,b) => (b.updatedAt||b.createdAt||0) - (a.updatedAt||a.createdAt||0));
+    res.json({ ok:true, data: list });
+  }catch(e){
+    console.error('GET /api/reports', e);
+    res.status(500).json({ ok:false, error:'Failed to load reports' });
+  }
+});
+
+// POST /api/reports  { title, description? } -> create
+app.post('/api/reports', express.json(), (req, res) => {
+  try{
+    const { title, description="" } = req.body || {};
+    const t = (title || '').trim();
+    if (!t) return res.status(400).json({ ok:false, error:'Title is required' });
+    const userKey = getUserKey(req);
+    const db = readReports();
+    const doc = {
+      id: uid(),
+      ownerKey: userKey,
+      title: t,
+      description: String(description||''),
+      items: [],
+      createdAt: now(),
+      updatedAt: now(),
+    };
+    db.reports.push(doc);
+    writeReports(db);
+    res.json({ ok:true, data: doc });
+  }catch(e){
+    console.error('POST /api/reports', e);
+    res.status(500).json({ ok:false, error:'Failed to create report' });
+  }
+});
+
+// GET /api/reports/:id -> fetch single (owner only)
+app.get('/api/reports/:id', (req, res) => {
+  try{
+    const userKey = getUserKey(req);
+    const db = readReports();
+    const r = db.reports.find(x => x.id === req.params.id && x.ownerKey === userKey);
+    if (!r) return res.status(404).json({ ok:false, error:'Not found' });
+    res.json({ ok:true, data: r });
+  }catch(e){
+    console.error('GET /api/reports/:id', e);
+    res.status(500).json({ ok:false, error:'Failed' });
+  }
+});
+
+// POST /api/reports/:id/items  { id?, title?, html?, metadata? } -> append item
+app.post('/api/reports/:id/items', express.json(), (req, res) => {
+  try{
+    const userKey = getUserKey(req);
+    const db = readReports();
+    const r = db.reports.find(x => x.id === req.params.id && x.ownerKey === userKey);
+    if (!r) return res.status(404).json({ ok:false, error:'Not found' });
+    const item = req.body || {};
+    item.id = item.id || uid();
+    item.title = String(item.title || 'Untitled Item');
+    item.html = String(item.html || '');
+    item.createdAt = item.createdAt || now();
+    r.items.push(item);
+    r.updatedAt = now();
+    writeReports(db);
+    res.json({ ok:true, data: item });
+  }catch(e){
+    console.error('POST /api/reports/:id/items', e);
+    res.status(500).json({ ok:false, error:'Failed to add item' });
+  }
+});
+
+// (Optional) DELETE /api/reports/:id/items/:itemId
+app.delete('/api/reports/:id/items/:itemId', (req, res) => {
+  try{
+    const userKey = getUserKey(req);
+    const db = readReports();
+    const r = db.reports.find(x => x.id === req.params.id && x.ownerKey === userKey);
+    if (!r) return res.status(404).json({ ok:false, error:'Not found' });
+    const before = r.items.length;
+    r.items = r.items.filter(it => it.id !== req.params.itemId);
+    if (r.items.length !== before) r.updatedAt = now();
+    writeReports(db);
+    res.json({ ok:true, data:true });
+  }catch(e){
+    res.status(500).json({ ok:false, error:'Failed to delete item' });
+  }
+});
+/* ======================= END REPORTS SYSTEM BLOCK ======================= */

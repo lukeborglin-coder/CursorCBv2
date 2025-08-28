@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>JAICE • Ask</title>
+  <link rel="icon" href="/public/favicon.ico" type="image/x-icon">
+  <link rel="stylesheet" href="styles.css"/>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">JAICE</span>
+      <span class="beta">BETA</span>
+    </div>
+    <div class="grow"></div>
+    <div class="controls">
+      <label class="dim">Client</label>
+      <select id="clientSelect"><option value="">All</option></select>
+    </div>
+  </header>
+
+  <main class="container">
+    <h1 class="page-title">Ask about your research.</h1>
+    <p class="subtitle">Chat-style answers. No dashboards. No theatrics.</p>
+
+    <section class="ask-box">
+      <input id="questionInput" type="text" placeholder="Try: What are the key barriers to treatment?" autocomplete="off"/>
+      <button id="askBtn" title="Ask">Ask</button>
+    </section>
+
+    <section id="chat" class="chat"></section>
+  </main>
+
+<script>
+const $ = (s)=>document.querySelector(s);
+const chat = $("#chat");
+const input = $("#questionInput");
+const askBtn = $("#askBtn");
+const clientSelect = $("#clientSelect");
+
+// Basic render helpers
+function addMsg(role, html) {
+  const wrap = document.createElement("div");
+  wrap.className = "msg " + role;
+  wrap.innerHTML = html;
+  chat.appendChild(wrap);
+  chat.scrollTop = chat.scrollHeight;
+  return wrap;
+}
+function esc(s){ return (s||"").replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+function toHtml(text){
+  if(!text) return "<p>(no content)</p>";
+  const lines = text.split(/\n+/).map(l=>l.trim()).filter(Boolean);
+  const out=[]; let inList=false;
+  for(const line of lines){
+    if(/^[-•]/.test(line)){ if(!inList){out.push("<ul>"); inList=true;} out.push("<li>"+esc(line.replace(/^[-•]\s*/, ""))+"</li>"); }
+    else { if(inList){out.push("</ul>"); inList=false;} out.push("<p>"+esc(line)+"</p>"); }
+  }
+  if(inList) out.push("</ul>");
+  return out.join("\n");
+}
+
+// Endpoint probing
+async function tryEndpoints(question, clientId){
+  const bodyJSON = (obj)=>({method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(obj)});
+  const endpoints = [
+    { url:"/api/qa", init: bodyJSON({query:question, clientId, stream:false}) },
+    { url:"/api/query", init: bodyJSON({query:question, clientId, stream:false}) },
+    { url:"/api/search", init: bodyJSON({q:question, clientId}) },
+    { url:"/search", init: bodyJSON({q:question, clientId}) },
+    { url:"/search?q="+encodeURIComponent(question)+(clientId?"&clientId="+encodeURIComponent(clientId):""), init: {method:"GET"} },
+    { url:"/ask", init: bodyJSON({query:question, clientId}) }
+  ];
+  let lastErr=null;
+  for(const ep of endpoints){
+    try{
+      const res = await fetch(ep.url, ep.init);
+      if(!res.ok) { lastErr = ep.url + " -> " + res.status; continue; }
+      const ct = res.headers.get("content-type") || "";
+      const data = ct.includes("application/json") ? await res.json() : { text: await res.text() };
+      data._source = ep.url;
+      return data;
+    }catch(e){ lastErr = String(e); }
+  }
+  throw new Error(lastErr || "No endpoint responded");
+}
+
+function normalizeToNarrative(data){
+  if(!data) return "No answer.";
+  let t = "";
+  if(typeof data === "string") t = data;
+  if(!t && data.answer) t = data.answer;
+  if(!t && data.text) t = data.text;
+  if(!t && data.message) t = data.message;
+  if(!t && data.payload && (data.payload.text || data.payload.summary)) t = data.payload.text || data.payload.summary;
+  if(!t && Array.isArray(data.blocks)){
+    t = data.blocks.filter(b=>["text","paragraph","theme"].includes(b.kind)).map(b=>b.text||b.detail||b.headline).filter(Boolean).join("\n\n");
+  }
+  if(!t && Array.isArray(data.answers)){
+    t = data.answers.map(a => (a.headline? a.headline+"\n":"") + (a.text||a.summary||"")).join("\n\n");
+  }
+  const bullets = [];
+  if(Array.isArray(data.bullets)) bullets.push(...data.bullets);
+  if(data.payload && Array.isArray(data.payload.bullets)) bullets.push(...data.payload.bullets);
+  if(bullets.length) t += "\n\n" + bullets.map(b=>"- "+b).join("\n");
+  return t || "No narrative text returned from "+(data._source||"service")+".";
+}
+
+async function ask(question){
+  if(!question) return;
+  const clientId = clientSelect.value || "";
+  addMsg("user", "<p>"+esc(question)+"</p>");
+  input.value="";
+  const thinking = addMsg("assistant thinking", "<p>Thinking…</p>");
+  try{
+    const data = await tryEndpoints(question, clientId);
+    const narrative = normalizeToNarrative(data);
+    thinking.remove();
+    addMsg("assistant", toHtml(narrative));
+  }catch(e){
+    thinking.remove();
+    addMsg("assistant", "<p>Could not fetch an answer.</p><p class='dim'>"+esc(String(e))+"</p>");
+  }
+}
+
+// Client dropdown
+async function loadClients(){
+  const sources = ["/api/clients","/clients","/admin/clients","/api/admin/clients"];
+  for(const url of sources){
+    try{
+      const res = await fetch(url);
+      if(!res.ok) continue;
+      const ct = res.headers.get("content-type")||"";
+      const data = ct.includes("application/json") ? await res.json() : null;
+      if(!data) continue;
+      const arr = Array.isArray(data) ? data : (Array.isArray(data.clients)? data.clients : []);
+      if(arr.length){
+        clientSelect.innerHTML = "<option value=''>All</option>" + arr.map(c=> `<option value="${esc(c.id||c.clientId||c.folderId||c.name)}">${esc(c.name||c.clientName||c.id)}</option>`).join("");
+        const saved = localStorage.getItem("clientId");
+        if(saved) clientSelect.value = saved;
+        clientSelect.addEventListener("change", ()=>{
+          localStorage.setItem("clientId", clientSelect.value);
+        });
+        return;
+      }
+    }catch(e){}
+  }
+  // Hide if none
+  clientSelect.parentElement.style.display = "none";
+}
+
+askBtn?.addEventListener("click", ()=> ask(input.value.trim()));
+input?.addEventListener("keydown", (e)=> { if(e.key==="Enter") ask(input.value.trim()); });
+loadClients();
+</script>
+</body>
+</html>

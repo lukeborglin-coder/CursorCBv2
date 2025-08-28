@@ -1,0 +1,20 @@
+:root{
+  --bg:#ffffff; --card:#fff7f1; --accent:#e9672b; --text:#1b1b1b; --muted:#6b7280; --border:#eee;
+}
+*{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Arial}
+.topbar{position:sticky;top:0;display:flex;gap:12px;align-items:center;padding:10px 16px;background:#fff;border-bottom:1px solid var(--border);z-index:10}
+.brand .logo{font-weight:800;letter-spacing:.4px}.brand .beta{font-size:10px;color:var(--muted);margin-left:6px}
+.grow{flex:1}
+.controls{display:flex;align-items:center;gap:8px}.controls label{font-size:12px;color:var(--muted)}
+.container{max-width:900px;margin:24px auto 80px;padding:0 16px}
+.page-title{text-align:center;margin:6px 0}.subtitle{text-align:center;color:var(--muted);margin-top:0}
+.ask-box{display:flex;gap:8px;justify-content:center;margin:20px auto 16px;max-width:760px}
+.ask-box input{flex:1;font-size:16px;padding:14px 16px;border:1px solid #e5e7eb;border-radius:9999px;background:#fff}
+.ask-box button{border:none;background:var(--accent);color:#fff;padding:0 18px;border-radius:9999px;font-weight:600;cursor:pointer;min-width:72px}
+.chat{display:flex;flex-direction:column;gap:12px;margin-top:16px}
+.msg{max-width:860px;margin:0 auto;padding:14px 16px;border-radius:16px}
+.msg.user{background:#f6f6f6}
+.msg.assistant{background:var(--card);border:1px solid #f0e3da}
+.msg.thinking{background:#fffbe6;color:#a16207;border:1px dashed #fde68a}
+.msg p{margin:8px 0;line-height:1.55}.msg ul{margin:8px 0 8px 1.2rem}
+.dim{color:var(--muted);font-size:12px}

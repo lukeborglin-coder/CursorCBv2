@@ -1,0 +1,336 @@
+JAICE Home Search Redesign — Implementation Gameplan (for Claude Code)
+Date: 2025-08-27
+Owner: Luke / handoff to Claude Code
+Scope: Home page search UX + backend flow for dynamic answer formats, with performance fixes.
+
+======================================================================
+1) Objectives
+======================================================================
+- Cut perceived latency from ~30s to <5s P75 for typical queries.
+- Make answers adapt to the question: chart, table, paragraph, or dashboard block set.
+- Keep existing behaviors: express-session auth, /me role mapping (internal→admin), Drive library ingestion/caching, Pinecone+OpenAI retrieval with recency-aware re-ranking, manifest chunking consistency.
+- Do NOT rebuild from scratch. Edit current files in place and preserve style/layout decisions already made.
+- Maintain topK=50 for retrieval across endpoints (per prior request).
+
+Deliverable: working implementation with feature flag and clean rollback path.
+
+======================================================================
+2) High-level Architecture Change
+======================================================================
+Introduce a two-stage pipeline:
+
+A) CLASSIFY (fast, lightweight)
+   - Input: user query, client context (clientId, library).
+   - Output: { type: "chart" | "table" | "paragraph" | "dashboard", confidence, signals }
+   - Target latency: <800ms end-to-end.
+   - Data sources: only minimal retrieval (optional) to detect data type. No heavy LLM answer here.
+
+B) ANSWER (format-specific execution)
+   - Based on "type", run the smallest possible retrieval + generation path.
+   - Return a typed payload contract the frontend can render without re-interpretation.
+   - Stream results where possible (SSE or chunked fetch).
+
+Benefits: avoids over-fetching, tailors retrieval to intent, and lets the UI render meaningful partials earlier.
+
+======================================================================
+3) New/Updated API Endpoints (Node/Express)
+======================================================================
+File to modify: server.js
+
+3.1 POST /api/query
+- Purpose: single entrypoint the frontend calls. The server performs classification, then the correct answer execution.
+- Request JSON:
+  {
+    "query": string,
+    "clientId": string,     // required for client library scope
+    "userId": string,       // from session if available; pass-through allowed
+    "sessionId": string,    // optional, echo back for UI correlation
+    "stream": boolean,      // default true; if false, return once
+    "topK": number,         // override, default 50
+    "forceType": "chart" | "table" | "paragraph" | "dashboard" | null // optional for debugging
+  }
+- Response (streaming, text/event-stream) emits a sequence of JSON lines (one per event), each on its own line:
+  event: meta
+  data: {"phase":"classify","type":"chart","confidence":0.78,"signals":{"hasTimeseries":true,"hasQuant":true}}
+
+  event: partial
+  data: {"phase":"data","type":"chart","dataset":{"series":[...],"x":"month","y":"satisfaction","unit":"%","notes":"..."}}
+
+  event: final
+  data: {"phase":"final","type":"chart","headline":"Satisfaction trended up 7 pts since 2023","explanations":[...],"citations":[...]}
+
+- Non-streaming (stream=false) response:
+  {
+    "type": "chart" | "table" | "paragraph" | "dashboard",
+    "meta": {...},            // classification hints
+    "payload": {...},         // one of the payload contracts below
+    "citations": [...],       // optional; preserve as today where available
+    "sessionId": "echoed"
+  }
+
+3.2 GET /api/query/health
+- Simple health for classifier + pinecone + openai reachability. Useful for CI checks.
+
+======================================================================
+4) Classification Logic
+======================================================================
+File to add: server/addons/classifier.js (ESM)
+Responsibilities: Decide answer type fast with zero or minimal retrieval.
+
+Inputs:
+- user query (lowercased, trimmed)
+- optional shallow metadata probe: perform a cheap Pinecone metadata-only query filtered to the client’s library (topK=10) to see if timeseries/numeric fields exist.
+
+Heuristics (combine rules + small LLM call with a tight budget, e.g., 128 tokens):
+- If query asks for trend, change over time, "last X months/years", "increase/decrease", or mentions a KPI (satisfaction, awareness, NPS, PBE, adherence, %/mean), prefer "chart".
+- If query asks “list”, “compare”, “top/bottom”, or expects counts across categories, prefer "table".
+- If query is broad qualitative (“barriers to treatment”, “drivers”, “why”), prefer "dashboard" (paragraph + bulleted blocks), unless metadata probe indicates a single dominant metric, in which case "paragraph".
+- If the library probe reveals only qualitative content, prefer "paragraph" or "dashboard".
+- Add a confidence score; drop to "paragraph" if confidence <0.5.
+
+Return:
+{ type, confidence, signals: { hasTimeseries, hasQuant, hasQual, hintedMetrics:[], hintedTimespan: "36m" } }
+
+Implementation detail:
+- Keep this function synchronous-feeling with a 1s ceiling. Use a Promise.race with a 900ms timeout around any LLM probe. Fall back to rules-only if timeout.
+
+======================================================================
+5) Retrieval Strategy by Type
+======================================================================
+Shared constants:
+- topK default = 50
+- respect existing recency-aware ranking using metadata.recencyEpoch
+- maintain existing chunking & manifests
+
+5.1 CHART
+- Pinecone filter: prefer chunks tagged with numeric arrays / KPIs (e.g., metadata.tags includes ["kpi","trend","timeseries"] or filenames like "tracker","ATU").
+- Post-processing: consolidate into a tidy dataset [{x, y, group?}] with validated numeric types.
+- If multiple series found (e.g., different segments), cap to 5 series by score.
+
+Payload (server emits in partial event as soon as dataset ready):
+{
+  "type":"chart",
+  "dataset": {
+    "series": [
+      {"name":"Total","points":[{"x":"2023-01","y":63},{"x":"2023-02","y":64}, ... ]},
+      {"name":"HCPs","points":[...]}
+    ],
+    "xLabel":"Month",
+    "yLabel":"% satisfied",
+    "valueFormat":"percent" | "number" | "index"
+  },
+  "headline":"Satisfaction increased 7 pts vs 2023",
+  "footnotes":["Base sizes ≥ n=100 unless noted"],
+  "explanations":[ "Peak in 2024-Q4 linked to message X" ]
+}
+
+5.2 TABLE
+- Pinecone filter: tables, crosstabs, “Top 10”, “Ranked”, or files with “table”/“data” cues.
+- Normalize rows/cols; return first 50 rows max (front end can paginate).
+
+Payload:
+{
+  "type":"table",
+  "columns":[{"key":"attribute","label":"Attribute"},{"key":"score","label":"% positive"}],
+  "rows":[{"attribute":"Ease of use","score":74}, ...],
+  "notes":["Totals may not sum due to rounding"]
+}
+
+5.3 PARAGRAPH
+- Summarize top supporting chunks with concise narrative. Keep <250 words. Include 3 to 5 bullets if helpful.
+
+Payload:
+{
+  "type":"paragraph",
+  "headline":"Key barriers to treatment",
+  "text":"... concise narrative ...",
+  "bullets":["Barrier 1","Barrier 2","Barrier 3"],
+  "citations":[{refId,page?}]
+}
+
+5.4 DASHBOARD
+- Compose 2 to 4 blocks: a short paragraph, a table OR list, and an optional mini-chart if fast to produce.
+- Make each block independently renderable.
+
+Payload:
+{
+  "type":"dashboard",
+  "blocks":[
+    {"kind":"paragraph","headline":"Summary","text":"..."},
+    {"kind":"list","headline":"Top barriers","items":["X","Y","Z"]},
+    {"kind":"table","columns":[...],"rows":[...]}
+  ]
+}
+
+======================================================================
+6) Frontend Rendering (public/index.html + public/app.js or equivalent)
+======================================================================
+Files to modify:
+- public/index.html (ensure container elements and a single “AnswerArea” mount)
+- public/styles.css (minor utilities for blocks, avoid “box-inside-box” look)
+- public/app.js (or wherever home page logic lives)
+
+Changes:
+- Add a renderer switch on response.type → mounts AnswerChart | AnswerTable | AnswerParagraph | AnswerDashboard.
+- Use streaming:
+  - On event:meta, show skeleton for the decided type.
+  - On event:partial with dataset (chart/table), render immediately.
+  - On event:final, fill in headline, bullets, and citations.
+- Keep existing visual style and spacing. No layout overhaul in this pass.
+
+Charting:
+- Reuse your current charting approach or a minimal library already in the repo.
+- Input is ready-to-plot JSON; do not recompute in the browser except formatting ticks.
+
+======================================================================
+7) Performance Tactics
+======================================================================
+- Stream early: for chart/table, emit dataset as soon as it’s built.
+- Narrow retrieval by type to reduce LLM tokens.
+- Use short contexts: for chart/table, avoid sending full chunks to the LLM; prefer server-side parse + light generation of headline.
+- Cache small things:
+  - Classification results LRU (key: normalized query + clientId), TTL 1 hour.
+  - Library stats per Drive folder (already exists; keep it).
+- Set Cache-Control: no-store for .html/.css/.js to avoid stale UI during iteration (server static middleware update).
+- Add SECURE_COOKIES=false support so sessions stick on HTTP during local dev.
+
+======================================================================
+8) Security & Env
+======================================================================
+- No secrets in code. Use process.env and provide .env.sample notes:
+  ANSWER_STREAMING=1
+  SECURE_COOKIES=false
+  PINECONE_TOPK=50
+  OPENAI_MODEL_ANSWER=gpt-4.1-mini  // example; keep configurable
+  OPENAI_MODEL_CLASSIFIER=gpt-4o-mini // tiny, for fast classify
+- Preserve role mapping: /me returns displayRole "admin" when role==="internal".
+
+======================================================================
+9) Error Handling & Telemetry
+======================================================================
+- If classification fails or times out → fall back to "paragraph".
+- Emit event:error with a concise message usable by UI toast.
+- Log timings: t_classify, t_retrieve, t_buildPayload, t_streamFirstByte.
+- Add GET /api/query/health for smoke tests.
+
+======================================================================
+10) Feature Flags & Rollback
+======================================================================
+- ANSWER_PIPELINE_V2=1 enables new path. If 0 or unset, revert to legacy single-shot flow.
+- Keep both codepaths for one release; remove legacy after signoff.
+
+======================================================================
+11) File-by-File Change List
+======================================================================
+server.js
+- Add routes: POST /api/query (streaming), GET /api/query/health
+- Wire classifier and type-specific executors
+- Add static no-store headers for .html/.css/.js
+- Respect SECURE_COOKIES=false for express-session options
+- Keep existing auth/session and /me mapping
+
+server/addons/classifier.js (new)
+- Export async classify(query, clientContext) → {type,confidence,signals}
+
+server/addons/executors/
+- chart.js → buildChartPayload(chunks, query, options)
+- table.js → buildTablePayload(...)
+- paragraph.js → buildParagraphPayload(...)
+- dashboard.js → buildDashboardPayload(...)
+
+server/addons/retrieval.js
+- Small helpers: vectorSearch({query, clientId, topK, filterHints}), with recency-aware re-rank preserved
+- Utilities to normalize numeric series and table rows
+
+public/index.html
+- Ensure a single #answer-area container, keep existing look
+- Optional: minimal skeleton containers per type
+
+public/app.js (or equivalent)
+- call /api/query with stream=true
+- SSE reader that handles event: meta | partial | final | error
+- Renderer switch for type → components
+
+public/styles.css
+- Small utility classes for blocks and tables; avoid nested framed boxes
+
+config/env.sample (update)
+- Document new env vars (do NOT include real values)
+
+======================================================================
+12) Pseudocode: POST /api/query (server.js)
+======================================================================
+app.post('/api/query', async (req, res) => {
+  const { query, clientId, stream = true, topK, forceType } = req.body || {};
+  // auth + input validation here
+
+  if (stream) {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    const send = (event, obj) => res.write(`event: ${event}\n` + `data: ${JSON.stringify(obj)}\n\n`);
+
+    // 1) classify
+    const meta = await classify(query, { clientId });
+    const type = forceType || meta.type || 'paragraph';
+    send('meta', { phase:'classify', ...meta, type });
+
+    // 2) retrieve by type
+    const chunks = await vectorSearch({ query, clientId, topK: topK ?? DEFAULT_TOPK, filterHints: type });
+    // 3) build payload
+    const builder = chooseBuilder(type);
+    const { partial, final } = await builder(chunks, query, { clientId });
+
+    if (partial) send('partial', { phase:'data', type, ...partial });
+    send('final', { phase:'final', type, ...final });
+    res.end();
+  } else {
+    // non-streaming
+    const meta = await classify(query, { clientId });
+    const type = forceType || meta.type || 'paragraph';
+    const chunks = await vectorSearch({ query, clientId, topK: topK ?? DEFAULT_TOPK, filterHints: type });
+    const builder = chooseBuilder(type);
+    const { final } = await builder(chunks, query, { clientId });
+    res.json({ type, meta, payload: final.payload, citations: final.citations || [] });
+  }
+});
+
+======================================================================
+13) Acceptance Criteria
+======================================================================
+- P75 time-to-first-token (TTFT) < 2s on streaming path; <5s to final.
+- Correct type selection ≥ 80% on a curated test set of 25 realistic questions:
+  - 8 trend KPI queries → chart
+  - 7 rank/compare → table
+  - 5 open-ended barriers/drivers → dashboard
+  - 5 short definitional → paragraph
+- No regressions to auth, admin creation, library tree, “Update Library” behavior, or recency-aware ranking.
+- Frontend renders all four types without console errors. No “box-inside-box” visuals.
+- Works with SECURE_COOKIES=false on localhost HTTP.
+- Static assets served with Cache-Control: no-store during dev.
+
+======================================================================
+14) Test Plan
+======================================================================
+- Unit: classifier rules; retrieval filters; dataset normalizer (edge cases: missing months, mixed % and raw counts).
+- Integration: end-to-end for each type, verify SSE ordering: meta → partial (optional) → final.
+- Manual smoke: 10 example prompts (trend, compare, barriers, simple fact). Confirm the UI switches components.
+- Load: 10 concurrent queries with stream=true; observe no event-stream stalls or session drops.
+
+======================================================================
+15) Rollout Steps
+======================================================================
+1. Create new files (classifier.js, executors/*, retrieval.js) and wire POST /api/query behind ANSWER_PIPELINE_V2.
+2. Update frontend to read SSE and switch renderer by type.
+3. Enable on staging with small test set; adjust rules/thresholds.
+4. Turn on in production copy of the repo. Keep forceType query param for debugging for one week.
+5. Remove legacy path after signoff.
+
+======================================================================
+16) Notes for Claude
+======================================================================
+- Edit existing files in place. Do not move routes or break current endpoints relied on by admin.html.
+- Preserve Pinecone recencyEpoch re-ranking and manifests’ chunking logic. Keep topK=50 default.
+- Do not commit secrets. Update env.sample and read env via process.env in server.js.
+- Keep UI consistent with current style. No redesign requested here.
+- If classification times out (>900ms), fall back to rules-only and proceed. Never block the stream.
