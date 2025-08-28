@@ -1,20 +1,442 @@
-:root{
-  --bg:#ffffff; --card:#fff7f1; --accent:#e9672b; --text:#1b1b1b; --muted:#6b7280; --border:#eee;
+/* === Report slide styling fixes === */
+.report-slide-preview { 
+  overflow: visible !important;
 }
-*{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Arial}
-.topbar{position:sticky;top:0;display:flex;gap:12px;align-items:center;padding:10px 16px;background:#fff;border-bottom:1px solid var(--border);z-index:10}
-.brand .logo{font-weight:800;letter-spacing:.4px}.brand .beta{font-size:10px;color:var(--muted);margin-left:6px}
-.grow{flex:1}
-.controls{display:flex;align-items:center;gap:8px}.controls label{font-size:12px;color:var(--muted)}
-.container{max-width:900px;margin:24px auto 80px;padding:0 16px}
-.page-title{text-align:center;margin:6px 0}.subtitle{text-align:center;color:var(--muted);margin-top:0}
-.ask-box{display:flex;gap:8px;justify-content:center;margin:20px auto 16px;max-width:760px}
-.ask-box input{flex:1;font-size:16px;padding:14px 16px;border:1px solid #e5e7eb;border-radius:9999px;background:#fff}
-.ask-box button{border:none;background:var(--accent);color:#fff;padding:0 18px;border-radius:9999px;font-weight:600;cursor:pointer;min-width:72px}
-.chat{display:flex;flex-direction:column;gap:12px;margin-top:16px}
-.msg{max-width:860px;margin:0 auto;padding:14px 16px;border-radius:16px}
-.msg.user{background:#f6f6f6}
-.msg.assistant{background:var(--card);border:1px solid #f0e3da}
-.msg.thinking{background:#fffbe6;color:#a16207;border:1px dashed #fde68a}
-.msg p{margin:8px 0;line-height:1.55}.msg ul{margin:8px 0 8px 1.2rem}
-.dim{color:var(--muted);font-size:12px}
+
+.report-slide-preview img { 
+  width: 100% !important; 
+  height: auto !important; 
+  object-fit: contain !important; 
+  display: block !important;
+  max-height: 100% !important;
+}
+
+.report-slide-card { 
+  overflow: visible !important; 
+}
+
+.slide-overlay { 
+  display: none !important; 
+}
+
+/* Loading spinner styles */
+.slide-loading {
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.9);
+  z-index: 2;
+}
+
+.slide-loading .spinner {
+  width: 24px;
+  height: 24px;
+  border: 2px solid #e5e7eb;
+  border-top-color: #D14829;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* === Admin page alignment with Home/Reports === */
+.app-header{display:flex;align-items:center;justify-content:space-between;height:56px;padding:0 20px;border-bottom:1px solid #eee;background:#fff}
+.app-header__left{display:flex;align-items:center;gap:14px}
+.app-header__right{display:flex;align-items:center;gap:14px}
+.app-nav{display:flex;gap:16px}
+.nav-link{padding:6px 8px;border-radius:8px;color:#444;text-decoration:none}
+.nav-link.active{border-bottom:2px solid #D14829}
+.beta-badge{font-size:11px;padding:2px 6px;border-radius:999px;background:#111;color:#fff}
+
+.user-chip{display:flex;align-items:center;gap:8px}
+.user-chip .avatar{width:24px;height:24px}
+
+.container{max-width:1100px;margin:24px auto;padding:0 16px}
+.page-title{display:flex;align-items:center;gap:12px;margin-bottom:16px}
+.status-pill{background:#e9f9ef;color:#15803d;border:1px solid #cfeedd;border-radius:999px;padding:6px 10px;font-size:12px}
+
+.kpi-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:20px}
+.kpi-card{border:1px solid #eee;border-radius:14px;padding:18px;background:#fff}
+.kpi-value{font-size:28px;font-weight:700;color:#D14829}
+.kpi-label{font-size:12px;text-transform:uppercase;color:#666}
+
+.panel{border:1px solid #eee;border-radius:14px;padding:18px;background:#fff;margin-bottom:18px}
+.panel-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}
+.field{display:flex;flex-direction:column;gap:6px;margin-top:8px}
+.select{height:38px;border:1px solid #ddd;border-radius:10px;padding:0 10px;background:#fff}
+
+.stats-row{display:flex;gap:10px;margin-top:12px}
+.stat-chip{border:1px solid #eee;border-radius:10px;padding:10px 12px;background:#fafafa}
+.stat-chip span{font-size:12px;color:#666}
+.stat-chip strong{display:block;font-size:16px;color:#111}
+
+.split-3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.list{display:flex;flex-direction:column;gap:10px}
+.list-item{display:flex;align-items:center;justify-content:space-between;border:1px solid #eee;border-radius:12px;padding:12px;background:#fff}
+.list-main .title{font-weight:600}
+.list-main .meta{font-size:12px;color:#666}
+.role-pill{font-size:11px;border:1px solid #ffd9bf;background:#fff7f0;color:#c2410c;border-radius:999px;padding:4px 8px}
+.link{background:none;border:none;padding:0;color:#0b63ce;cursor:pointer}
+.link-danger{color:#b42318}
+.empty{color:#888;font-size:13px}
+
+/* === Overflow menu & report styles === */
+.response-card{ position: relative; }
+.response-menu-button{ position:absolute; right:10px; top:10px; background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:2px 8px; cursor:pointer; line-height:1; font-weight:700; z-index:1000; }
+.response-menu{ position:absolute; right:10px; top:36px; display:none; background:#fff; border:1px solid #e5e7eb; border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,.08); z-index:1000; min-width:180px; }
+.response-menu.open{ display:block; }
+.response-menu-item{ display:block; width:100%; text-align:left; padding:10px 12px; background:none; border:none; font-size:14px; cursor:pointer; }
+.response-menu-item:hover{ background:#f3f4f6; }
+.response-expansion, .response-summary{ margin-top:10px; padding:10px 12px; border-left:3px solid #e5e7eb; background:#fafafa; border-radius:6px; }
+.is-dismissed{ display:none; }
+
+.active-report-bar{ position:fixed; left:16px; right:16px; bottom:16px; background:#ffffff; border:1px solid #e5e7eb; border-radius:12px; padding:10px 12px; display:none; align-items:center; justify-content:space-between; box-shadow:0 6px 24px rgba(0,0,0,.08); z-index:999; }
+.active-report-bar .ar-actions button, .active-report-bar .ar-actions .ar-link{ margin-left:6px; padding:6px 10px; border:1px solid #e5e7eb; border-radius:8px; background:#fff; cursor:pointer; font-size:13px; }
+.active-report-bar .ar-actions .ar-link{ text-decoration:none; }
+.toast{ position:fixed; left:50%; transform:translateX(-50%); bottom:80px; background:#111827; color:#fff; padding:8px 12px; border-radius:8px; opacity:0; transition:opacity .2s ease; z-index:1000; }
+.toast.show{ opacity:1; }
+
+/* Additional fixes for broken images and slide previews */
+.no-preview{
+  position:absolute;
+  inset:0;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  color:var(--text-muted,#6b7280);
+  font-size:12px;
+  background:rgba(0,0,0,0.02);
+  border-radius:10px;
+  display:none;
+}
+
+.report-slide-preview.broken .no-preview{
+  display:flex;
+}
+
+.report-slide-preview.broken img{
+  display:none !important;
+}
+
+.report-slide-preview img{
+  image-rendering:auto;
+}
+/* == JAICE additions == */
+.recos-wrap{display:flex}
+
+
+/* === Collapsible Sidebar === */
+.sidebar-toggle {
+  position: fixed !important;
+  top: 15px !important;
+  left: 15px !important;
+  z-index: 1000 !important;
+  background: #fff !important;
+  border: 1px solid #e5e7eb !important;
+  border-radius: 8px !important;
+  padding: 8px 12px !important;
+  cursor: pointer !important;
+  font-size: 14px !important;
+  font-weight: 600 !important;
+  color: #374151 !important;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1) !important;
+  transition: all 0.3s ease !important;
+}
+
+.sidebar-toggle:hover {
+  background: #f9fafb !important;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15) !important;
+}
+
+/* Save Report Button */
+.save-report-btn {
+  position: fixed !important;
+  top: 15px !important;
+  right: 15px !important;
+  z-index: 1000 !important;
+  background: #D14829 !important;
+  color: white !important;
+  border: none !important;
+  border-radius: 8px !important;
+  padding: 8px 16px !important;
+  cursor: pointer !important;
+  font-size: 14px !important;
+  font-weight: 600 !important;
+  box-shadow: 0 2px 8px rgba(209, 72, 41, 0.3) !important;
+  transition: all 0.3s ease !important;
+  display: none !important;
+}
+
+.save-report-btn:hover {
+  background: #B83E2A !important;
+  box-shadow: 0 4px 12px rgba(209, 72, 41, 0.4) !important;
+}
+
+.save-report-btn.show {
+  display: block !important;
+}
+
+/* Reduce sidebar width by 100px */
+.left-sidebar,
+.sidebar {
+  width: calc(250px - 100px) !important; /* Reduced by 100px */
+  transition: transform 0.3s ease !important;
+}
+
+/* Sidebar collapsed state */
+body.sidebar-collapsed .left-sidebar,
+body.sidebar-collapsed .sidebar {
+  transform: translateX(-100%) !important;
+  transition: transform 0.3s ease !important;
+}
+
+/* Report content when sidebar is collapsed */
+body.viewing-report.sidebar-collapsed .report-content .report-view-container { 
+  max-width: none !important; 
+  width: 100% !important; 
+  padding: 60px 15px 15px 15px !important; 
+}
+
+body.viewing-report.sidebar-collapsed #reportGrid.report-grid {
+  display: flex !important;
+  flex-direction: column !important;
+  width: calc(100% - 20px) !important;
+  max-width: none !important;
+  margin: 0 10px !important;
+  padding: 0 !important;
+  gap: 12px !important;
+}
+
+/* Report title when sidebar is collapsed */
+body.viewing-report.sidebar-collapsed .report-header,
+body.viewing-report.sidebar-collapsed .page-header {
+  width: 100% !important;
+  margin-left: 0 !important;
+  padding-left: 60px !important;
+  transition: all 0.3s ease !important;
+}
+
+/* === Report layout hard overrides === */
+body.viewing-report .report-content .report-view-container { max-width: none !important; width: 100% !important; padding: 10px 15px !important; }
+body.viewing-report #reportGrid.report-grid {
+  display: flex !important;
+  flex-direction: column !important;
+  width: calc(100% - 20px) !important;
+  max-width: none !important;
+  margin: 0 10px !important;
+  padding: 0 !important;
+  gap: 12px !important;
+}
+
+/* Responsive adjustments */
+@media (max-width: 1200px) {
+  body.viewing-report #reportGrid.report-grid {
+    width: calc(100% - 15px) !important;
+    margin: 0 10px !important;
+  }
+}
+
+@media (max-width: 768px) {
+  body.viewing-report #reportGrid.report-grid {
+    width: calc(100% - 10px) !important;
+    margin: 0 5px !important;
+  }
+}
+/* Remove grid span helpers - using block layout now */
+/* Force saved inner cards to fill */
+#reportGrid .response-card,
+#reportGrid .answer-card,
+#reportGrid .dashboard-item {
+  width: 100% !important;
+  max-width: 100% !important;
+}
+
+
+/* === Strong width overrides for saved card HTML === */
+#reportGrid .dashboard-item, 
+#reportGrid .dashboard-item *, 
+#reportGrid .answer-card, 
+#reportGrid .answer-card *,
+#reportGrid .response-card,
+#reportGrid .response-card * {
+  box-sizing: border-box !important;
+  max-width: 100% !important;
+  width: auto !important;
+  min-width: 0 !important;
+  white-space: pre-wrap !important;
+  word-break: keep-all !important;
+  overflow-wrap: normal !important;
+  transform: none !important;
+}
+
+#reportGrid .dashboard-item .chart-content,
+#reportGrid .dashboard-item .bullets,
+#reportGrid .dashboard-item .quote-section {
+  display: block !important;
+  width: 100% !important;
+  max-width: 100% !important;
+}
+
+
+/* === TEXT FORMATTING AND SPACING FIXES === */
+#reportGrid p, 
+#reportGrid div, 
+#reportGrid span,
+#reportGrid li {
+  line-height: 1.4 !important;
+  margin-bottom: 0.3em !important;
+  word-spacing: normal !important;
+  letter-spacing: normal !important;
+  font-size: 0.75em !important; /* 50% smaller font */
+}
+
+#reportGrid h1, #reportGrid h2, #reportGrid h3, 
+#reportGrid h4, #reportGrid h5, #reportGrid h6 {
+  margin-bottom: 0.2em !important;
+  margin-top: 0.3em !important;
+  line-height: 1.2 !important;
+  font-size: 0.8em !important; /* 50% smaller font for headers */
+}
+
+#reportGrid h1:first-child, #reportGrid h2:first-child, 
+#reportGrid h3:first-child, #reportGrid h4:first-child, 
+#reportGrid h5:first-child, #reportGrid h6:first-child {
+  margin-top: 0 !important;
+}
+
+#reportGrid ul, #reportGrid ol {
+  margin-bottom: 1em !important;
+  padding-left: 1.5em !important;
+}
+
+#reportGrid li {
+  margin-bottom: 0.5em !important;
+}
+
+/* Adjust padding for orange boxes to reduce height and fix spacing */
+#reportGrid .response-card,
+#reportGrid .answer-card {
+  padding: 12px !important;
+  line-height: 1.3 !important;
+  min-height: auto !important;
+}
+
+/* Fix spacing between headlines and text in orange boxes */
+#reportGrid .response-card h1,
+#reportGrid .response-card h2,
+#reportGrid .response-card h3,
+#reportGrid .answer-card h1,
+#reportGrid .answer-card h2,
+#reportGrid .answer-card h3 {
+  margin-bottom: 2px !important;
+  margin-top: 0 !important;
+  font-size: 0.8em !important;
+}
+
+#reportGrid .response-card p,
+#reportGrid .answer-card p {
+  margin-top: 0 !important;
+  margin-bottom: 2px !important;
+  font-size: 0.75em !important;
+}
+
+/* White boxes keep normal padding */
+#reportGrid .dashboard-item {
+  padding: 20px !important;
+  line-height: 1.6 !important;
+}
+
+/* === FINAL WIDTH RESCUE PATCH === */
+#reportGrid { width: 100% !important; }
+/* Orange boxes (response-card, answer-card) - full width by default */
+#reportGrid .report-item-card.has-response-card,
+#reportGrid .report-item-card.has-answer-card,
+#reportGrid .draggable-card:has(.response-card),
+#reportGrid .draggable-card:has(.answer-card) {
+  width: 100% !important;
+  flex: 0 0 100% !important;
+  margin-bottom: 0 !important;
+  order: -1 !important; /* Force orange boxes to top */
+}
+
+/* Remove hover effects from grid containers, keep only on cards */
+#reportGrid .report-item-card,
+#reportGrid .draggable-card {
+  box-shadow: none !important;
+  transition: none !important;
+}
+
+#reportGrid .report-item-card:hover,
+#reportGrid .draggable-card:hover {
+  box-shadow: none !important;
+  transform: none !important;
+}
+
+/* Keep hover effects only on actual content cards */
+#reportGrid .response-card:hover,
+#reportGrid .answer-card:hover,
+#reportGrid .dashboard-item:hover {
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1) !important;
+  transition: box-shadow 0.2s ease !important;
+}
+
+/* White boxes (dashboard-item) - can be side by side */
+#reportGrid .report-item-card.has-dashboard-item,
+#reportGrid .draggable-card:has(.dashboard-item) {
+  width: calc(50% - 10px) !important;
+  flex: 0 0 calc(50% - 10px) !important;
+  margin-bottom: 0 !important;
+}
+
+/* Container for white boxes to allow side-by-side layout */
+#reportGrid {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  gap: 20px !important;
+}
+
+/* Fallback for all cards */
+#reportGrid .report-item-card,
+#reportGrid .draggable-card {
+  display: block !important;
+  min-width: 0 !important;
+  transform: none !important;
+  box-sizing: border-box !important;
+}
+
+/* Responsive: Stack white boxes on smaller screens */
+@media (max-width: 768px) {
+  #reportGrid .report-item-card.has-dashboard-item,
+  #reportGrid .draggable-card:has(.dashboard-item) {
+    width: 100% !important;
+    flex: 0 0 100% !important;
+  }
+}
+
+#reportGrid .report-item-content {
+  display: block !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+}
+
+#reportGrid .dashboard-item,
+#reportGrid .answer-card,
+#reportGrid .response-card {
+  display: block !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+}
+
+#reportGrid .dashboard-item *,
+#reportGrid .answer-card *,
+#reportGrid .response-card * {
+  white-space: pre-wrap !important;
+  overflow-wrap: normal !important;
+  word-break: keep-all !important;
+}
