@@ -128,6 +128,19 @@
 /* == JAICE additions == */
 .recos-wrap{display:flex}
 
+/* === Block group grid for ReportRenderer === */
+.block-group{ display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:16px; }
+.block-group.cols-3{ grid-template-columns:repeat(3, minmax(0,1fr)); }
+@media (max-width: 900px){
+  .block-group, .block-group.cols-3{ grid-template-columns: 1fr; }
+}
+.block-card{ background:#fff; border:1px solid #eee; border-radius:12px; padding:14px; }
+.block-headline{ font-size:22px; line-height:1.2; font-weight:700; margin:4px 0 8px; }
+.block-text{ font-size:14px; color:#374151; }
+.block-quote{ font-style:italic; color:#111; }
+.block-quote .meta{ color:#6b7280; font-size:12px; margin-top:6px; }
+.block-slide img{ width:100%; height:auto; display:block; border-radius:8px; }
+
 
 /* === Collapsible Sidebar === */
 .sidebar-toggle {
