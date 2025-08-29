@@ -114,8 +114,8 @@ async function buildDashboardPayload({answer, themes, relevantChunks, mostRecent
 import pdf2pic from 'pdf2pic';
 import sharp from 'sharp';
 import fs from 'node:fs';
+import { promises as fsp } from 'node:fs';
 import path from 'node:path';
-
 
 // --- helper to fetch Drive file bytes as Buffer ---
 async function __downloadDriveFile(fileId) {
@@ -134,8 +134,7 @@ import { tmpdir } from 'os';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Initialize fs.promises after imports
-const fsp = fs.promises;
+// fsp already imported above
 
 // Create a temporary directory for PDF processing
 const TEMP_DIR = path.join(tmpdir(), 'jaice-pdf-temp');
@@ -172,7 +171,6 @@ async function getPdfThumbnail(fileId, pageNumber = 1) {
   const page = Number(pageNumber) > 0 ? Number(pageNumber) : 1;
   return `/secure-slide/${fileId}/${page}`;
 }
-
 
 function buildDrivePreviewUrl(fileId, page){
   const p = page && Number(page)>0 ? `#page=${Number(page)}` : '';
@@ -211,7 +209,6 @@ function buildTrendFromChunks(chunks){
   const series = labels.map(L=> ({ label:L, values: keys.map(k=> pts[k][L] ?? null) }));
   return { type: 'lines', timepoints: keys, labels, series };
 }
-
 
 async function extractTagsFromTitlePage(fileId){
   try{
@@ -581,12 +578,84 @@ import bcrypt from "bcryptjs";
 import OpenAI from "openai";
 import { google } from "googleapis";
 import crypto from "node:crypto";
-// JAICE v2 addons
-import { classify } from "./server/addons/classifier.js";
-import { planLayout } from "./server/addons/planner.js";
-import { bind as bindReport } from "./server/addons/binder.js";
+
+import { classify } from './server/addons/classifier.js';
+import { planLayout } from './server/addons/planner.js';
+import { vectorSearch } from './server/addons/retrieval.js';
+import { bind } from './server/addons/binder.js';
+import { validateLayout } from './server/addons/validators.js';
 
 dotenv.config({ path: path.resolve(process.cwd(), ".env"), override: true });
+
+// Environment detection
+const isProduction = process.env.NODE_ENV === 'production' || process.env.RENDER || process.env.RAILWAY || process.env.VERCEL;
+const isLocal = !isProduction;
+
+console.log(`🌍 Environment: ${isProduction ? 'PRODUCTION' : 'LOCAL'}`);
+
+// Auto-discover Google credentials with environment-specific handling
+function discoverGoogleCredentials() {
+  // For production (Render/Railway/etc), prefer environment variables
+  if (isProduction) {
+    // Try JSON credentials first (Render preferred method)
+    if (process.env.GOOGLE_CREDENTIALS_JSON) {
+      try {
+        // Validate JSON
+        JSON.parse(process.env.GOOGLE_CREDENTIALS_JSON);
+        console.log(`✅ Using production Google credentials (JSON)`);
+        return null; // Signal to use credentialsJson instead of keyFile
+      } catch (e) {
+        console.log(`❌ Invalid Google credentials JSON in environment`);
+      }
+    }
+    
+    // Try file path
+    const envPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+    if (envPath && fs.existsSync(envPath)) {
+      console.log(`✅ Using production Google credentials at: ${envPath}`);
+      return envPath;
+    }
+    
+    console.log(`⚠️ No production Google credentials found. Set GOOGLE_CREDENTIALS_JSON environment variable.`);
+    return "";
+  }
+  
+  // For local development, check local files first
+  const possiblePaths = [
+    'credentials/google-credentials.json',
+    'credentials/service-account.json',
+    'google-credentials.json',
+    'service-account.json'
+  ];
+  
+  for (const filePath of possiblePaths) {
+    try {
+      if (fs.existsSync(filePath)) {
+        console.log(`✅ Found local Google credentials at: ${filePath}`);
+        return filePath;
+      }
+    } catch (e) {
+      // Continue searching
+    }
+  }
+  
+  // Fallback to system env var for local
+  const envPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  if (envPath && fs.existsSync(envPath)) {
+    console.log(`✅ Using system Google credentials at: ${envPath}`);
+    return envPath;
+  }
+  
+  if (isLocal) {
+    console.log(`⚠️ No Google credentials found locally. Place credentials in ./credentials/ folder for auto-discovery.`);
+    console.log(`   For production, set GOOGLE_CREDENTIALS_JSON environment variable.`);
+  }
+  
+  return "";
+}
+
+// Runtime flags
+let FORCE_REEMBED_ON_MANUAL = false;
 
 const config = {
   server: {
@@ -595,13 +664,16 @@ const config = {
     authToken: process.env.AUTH_TOKEN || "coggpt25",
     secureCookies: process.env.SECURE_COOKIES === "true",
   },
+  environment: {
+    isProduction,
+    isLocal,
+    platform: process.env.RENDER ? 'render' : process.env.RAILWAY ? 'railway' : process.env.VERCEL ? 'vercel' : 'local',
+  },
   ai: {
     openaiKey: process.env.OPENAI_API_KEY,
     embeddingModel: process.env.EMBEDDING_MODEL || "text-embedding-3-small",
     answerModel: process.env.ANSWER_MODEL || "gpt-4o-mini",
     defaultTopK: Number(process.env.DEFAULT_TOPK) || 50,
-    plannerModel: process.env.OPENAI_MODEL_PLANNER || process.env.PLANNER_MODEL || null,
-    extractModel: process.env.OPENAI_MODEL_EXTRACT || process.env.EXTRACT_MODEL || null,
   },
   pinecone: {
     apiKey: process.env.PINECONE_API_KEY,
@@ -609,8 +681,14 @@ const config = {
   },
   drive: {
     rootFolderId: process.env.DRIVE_ROOT_FOLDER_ID || "",
-    keyFile: process.env.GOOGLE_APPLICATION_CREDENTIALS || "",
-    credentialsJson: process.env.GOOGLE_CREDENTIALS_JSON || "",
+    keyFile: (() => {
+      const discovered = discoverGoogleCredentials();
+      return discovered === null ? "" : discovered; // null means use credentialsJson instead
+    })(),
+    credentialsJson: (() => {
+      const discovered = discoverGoogleCredentials();
+      return discovered === null ? process.env.GOOGLE_CREDENTIALS_JSON || "" : "";
+    })(),
   },
   data: {
     cacheDir: process.env.DATA_CACHE_DIR || path.resolve(process.cwd(), "data-cache"),
@@ -625,10 +703,33 @@ const config = {
     startDelayMs: Number(process.env.AUTO_INGEST_DELAY_MS || 2000),
     syncIntervalMs: Number(process.env.AUTO_SYNC_INTERVAL_MS || 3600000),
   },
-  features: {
-    v2Pipeline: String(process.env.ANSWER_PIPELINE_V2||'0') === '1'
-  }
 };
+
+// Thumbnail cache to improve performance
+const THUMBNAIL_CACHE = new Map();
+const THUMBNAIL_CACHE_DIR = path.join(process.cwd(), 'data-cache', 'thumbnails');
+let cacheInitialized = false;
+
+// Client libraries cache to reduce redundant calls
+const CLIENT_LIBRARIES_CACHE = {
+  data: null,
+  lastUpdated: 0,
+  ttl: 30000 // 30 seconds
+};
+
+async function initThumbnailCache() {
+  if (cacheInitialized) return;
+  try {
+    await fsp.mkdir(THUMBNAIL_CACHE_DIR, { recursive: true });
+    cacheInitialized = true;
+  } catch (error) {
+    console.warn('Failed to initialize thumbnail cache directory:', error.message);
+  }
+}
+
+function getThumbnailCacheKey(fileId, pageNumber) {
+  return `${fileId}_page_${pageNumber}`;
+}
 
 const logger = {
   info: (...a)=>console.log("INFO", new Date().toISOString(), ...a),
@@ -881,9 +982,60 @@ app.use(cors());
 app.use(express.json({ limit: "20mb" }));
 
 // PDF Preview endpoint - serve PDF pages on-demand with improved stream handling
+
+// Re-add lightweight placeholder for /secure-slide to avoid broken thumbnails.
+// Generates a simple PNG with the slide number; avoids heavy PDF rendering.
+app.get('/secure-slide/:fileId/:page', async (req, res) => {
+  try {
+    const { fileId, page } = req.params;
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+
+    // Lazy import canvas implementation
+    const canvasLoad = (typeof __loadCanvasFlexible === 'function') ? await __loadCanvasFlexible() : { mod: null, variant: null };
+    const createCanvas = canvasLoad.mod && (canvasLoad.mod.createCanvas || (canvasLoad.mod.default && canvasLoad.mod.default.createCanvas));
+    if (!createCanvas) {
+      // If canvas is unavailable, fall back to Drive preview redirect so clients at least see something.
+      const previewUrl = buildDrivePreviewUrl(fileId, pageNum);
+      return res.redirect(302, previewUrl);
+    }
+
+    const width = 640, height = 360;
+    const canvas = createCanvas(width, height);
+    const ctx = canvas.getContext('2d');
+
+    // Background
+    ctx.fillStyle = '#f3f4f6'; // gray-100
+    ctx.fillRect(0, 0, width, height);
+
+    // Border
+    ctx.strokeStyle = '#9ca3af'; // gray-400
+    ctx.lineWidth = 4;
+    ctx.strokeRect(2, 2, width - 4, height - 4);
+
+    // Text
+    ctx.fillStyle = '#1f2937'; // gray-800
+    ctx.font = 'bold 28px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText(`Preview slide ${pageNum}`, width / 2, height / 2 - 10);
+    ctx.font = '16px Arial';
+    ctx.fillText('Drive previews are used in production; this is a lightweight placeholder.', width / 2, height / 2 + 22);
+
+    res.setHeader('Content-Type', 'image/png');
+    res.setHeader('Cache-Control', 'no-store');
+    canvas.createPNGStream().pipe(res);
+  } catch (e) {
+    // On any error, degrade to a 1x1 transparent PNG
+    const png = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/afnqCIAAAAASUVORK5CYII=',
+      'base64'
+    );
+    res.setHeader('Content-Type', 'image/png');
+    res.setHeader('Cache-Control', 'no-store');
+    res.status(200).end(png);
+  }
+});
 // removed /pdf-preview route
 // /* removed /secure-slide/ route */
-
 
 app.use(session({
   secret: config.server.sessionSecret,
@@ -891,91 +1043,6 @@ app.use(session({
   saveUninitialized: false,
   cookie: { httpOnly: true, sameSite: "lax", secure: config.server.secureCookies, maxAge: 1000*60*60*8 }
 }));
-
-// === JAICE v2 Query API (SSE) ===
-app.post('/api/query', requireSession, async (req, res) => {
-  try{
-    const body = req.body || {};
-    const query = String(body.query||body.userQuery||'').trim();
-    const clientId = String(body.clientId || req.session?.activeClientId || 'sample_client_1');
-    const userId = body.userId || null;
-    const sessionId = body.sessionId || req.sessionID || null;
-    const stream = (body.stream !== false);
-    const topK = Number(body.topK || process.env.PINECONE_TOPK || config.ai.defaultTopK || 50);
-    const forcePlan = body.forcePlan || null;
-    const forceBlocks = Array.isArray(body.forceBlocks)? body.forceBlocks : null;
-
-    if (!query) { res.status(400).json({ error:'query required' }); return; }
-
-    const signalsObj = classify(query, { clientId });
-
-    if (!stream){
-      // Non-streaming: run plan+bind sequentially and return final
-      const planned = await planLayout({ query, signals: signalsObj.signals, forcePlan, forceBlocks, model: config.ai.plannerModel, apiKey: config.ai.openaiKey });
-      const events = [];
-      for await (const ev of bindReport({
-        plan: planned.layout,
-        query,
-        clientId,
-        topK,
-        searchFns: { embed: embedTexts, pineconeQuery, openai },
-        textModel: config.ai.extractModel || config.ai.answerModel
-      })) { events.push(ev); }
-      const final = events.find(e=>e.type==='final') || { layout: [] };
-      res.json({ phase:'final', type:'report', layout: final.layout, citations: final.citations||[], plan: planned.plan, signals: signalsObj.signals });
-      return;
-    }
-
-    // Streaming via SSE
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache, no-store, must-revalidate',
-      'Connection': 'keep-alive'
-    });
-
-    const send = (event, data) => {
-      res.write(`event: ${event}\n`);
-      res.write(`data: ${JSON.stringify(data)}\n\n`);
-    };
-
-    // meta
-    send('meta', { phase:'classify', signals: signalsObj.signals, plan: signalsObj.type==='rich'?'rich':'simple', confidence: signalsObj.confidence });
-
-    // plan
-    const planned = await planLayout({ query, signals: signalsObj.signals, forcePlan, forceBlocks, model: config.ai.plannerModel, apiKey: config.ai.openaiKey });
-    send('plan', { phase:'plan', layout: planned.layout });
-
-    // bind progressive
-    (async () => {
-      try{
-        for await (const ev of bindReport({
-          plan: planned.layout,
-          query,
-          clientId,
-          topK,
-          searchFns: { embed: embedTexts, pineconeQuery, openai },
-          textModel: config.ai.extractModel || config.ai.answerModel
-        })){
-          if (ev.type==='partial') send('partial', Object.assign({ phase:'bind' }, ev));
-          if (ev.type==='final') send('final', Object.assign({ phase:'final', type:'report' }, ev));
-        }
-      }catch(e){ send('error', { phase:'error', message: String(e?.message||e) }); }
-      finally{ res.end(); }
-    })();
-  }catch(err){
-    try{ res.write(`event: error\n`); res.write(`data: ${JSON.stringify({ phase:'error', message:String(err?.message||err) })}\n\n`); }catch(_){ }
-    try{ res.end(); }catch(_){ }
-  }
-});
-
-// Health endpoint for v2
-app.get('/api/query/health', async (req, res) => {
-  const out = { ok:true, v2Enabled: !!config.features.v2Pipeline, pinecone:false, openai:false, drive:false };
-  try{ out.openai = !!config.ai.openaiKey; } catch(_){ }
-  try{ out.pinecone = !!(config.pinecone.apiKey && config.pinecone.indexHost); } catch(_){ }
-  try{ out.drive = !!(config.drive.rootFolderId); } catch(_){ }
-  res.json(out);
-});
 
 const CONFIG_DIR = path.resolve(process.cwd(), "config");
 const USERS_PATH = path.join(CONFIG_DIR, "users.json");
@@ -1069,6 +1136,79 @@ async function pineconeQuery(vector, namespace, topK){
   return r.json();
 }
 
+// === Quote extraction helper ===
+async function extractSupportingQuotes(chunks, userQuery, quotesLevel) {
+  const quotes = [];
+  
+  // Determine how many quotes to return based on level
+  const maxQuotes = quotesLevel === 'many' ? 8 : quotesLevel === 'moderate' ? 4 : 2;
+  
+  for (const chunk of chunks) {
+    if (quotes.length >= maxQuotes) break;
+    
+    const text = chunk.textSnippet || '';
+    
+    // Find quotes in the format: "quote text" - Attribution
+    const quoteRegex = /"([^"]+)"\s*-\s*([^"\n]+)/g;
+    let match;
+    
+    while ((match = quoteRegex.exec(text)) !== null && quotes.length < maxQuotes) {
+      const quoteText = match[1].trim();
+      const attribution = match[2].trim();
+      
+      // Categorize the attribution
+      let category = 'HCP'; // Default
+      const lowerAttribution = attribution.toLowerCase();
+      
+      if (lowerAttribution.includes('patient') || lowerAttribution.includes('pt')) {
+        category = 'Patient';
+      } else if (lowerAttribution.includes('caregiver') || lowerAttribution.includes('cg') || 
+                 lowerAttribution.includes('parent') || lowerAttribution.includes('mother') || 
+                 lowerAttribution.includes('father')) {
+        category = 'Caregiver';
+      } else if (lowerAttribution.includes('hcp') || lowerAttribution.includes('doctor') || 
+                 lowerAttribution.includes('physician') || lowerAttribution.includes('clinician') ||
+                 lowerAttribution.includes('neurologist') || lowerAttribution.includes('specialist')) {
+        category = 'HCP';
+      }
+      
+      // Only include quotes that are relevant and substantial
+      if (quoteText.length > 20) {
+        quotes.push({
+          text: quoteText,
+          attribution: `- ${category}`,
+          source: chunk.fileName || 'Unknown Source',
+          relevance: calculateQuoteRelevance(quoteText, userQuery)
+        });
+      }
+    }
+  }
+  
+  // Sort by relevance and return top quotes
+  return quotes
+    .sort((a, b) => b.relevance - a.relevance)
+    .slice(0, maxQuotes)
+    .map(q => ({
+      text: q.text,
+      attribution: q.attribution,
+      source: q.source
+    }));
+}
+
+function calculateQuoteRelevance(quoteText, userQuery) {
+  const queryWords = userQuery.toLowerCase().split(/\s+/);
+  const quoteWords = quoteText.toLowerCase().split(/\s+/);
+  
+  let matches = 0;
+  for (const word of queryWords) {
+    if (word.length > 3 && quoteWords.some(qw => qw.includes(word))) {
+      matches++;
+    }
+  }
+  
+  return matches / queryWords.length;
+}
+
 // === FIXED Supporting Findings helpers ===
 async function proposeThemeAssignments(openai, model, userQuery, chunks) {
   const refs = (chunks || []).map((c, i) => ({
@@ -1089,7 +1229,7 @@ async function proposeThemeAssignments(openai, model, userQuery, chunks) {
   const prompt = `Create up to 10 DISTINCT themes for: "${userQuery}"
 
 Available references (assign each to EXACTLY ONE theme):
-${refs.map(r => `${r.id}: ${r.text.substring(0, 200)}...`).join("\n\n")}
+${refs.map(r => `${r.id}: ${r.text.substring(0, 200)}.`).join("\n\n")}
 
 RULES:
 - Create up to 10 themes that don't overlap
@@ -1297,20 +1437,34 @@ JSON format:
 }
 
 // === FIXED Google Drive sync (using current manifest files) ===
-async function syncGoogleDriveData() {
-  if (!config.drive.rootFolderId) {
+async function syncGoogleDriveData(options = {}) {
+  const __forceAll = !!options.forceAll;
+if (!config.drive.rootFolderId) {
     logger.warn("No Google Drive root folder configured - skipping sync");
+    return;
+  }
+  
+  // Check if credentials are available
+  try {
+    const auth = authClient || getAuth();
+    if (!auth) {
+      logger.warn("⚠️ No Google credentials available - skipping Drive sync");
+      return;
+    }
+  } catch (error) {
+    logger.warn(`⚠️ Google credentials error: ${error.message} - skipping Drive sync`);
     return;
   }
 
   try {
-    logger.info("ðŸ”„ Starting Google Drive sync...");
+    logger.info("🔄 Starting Google Drive sync...");
+  let __embedCounters = {candidates:0, supported:0, skippedUnchanged:0, embedded:0, skippedUnsupported:0, forced:0};
     
     const drive = google.drive({ version: "v3", auth: authClient || getAuth() });
     const clientFolders = await listClientFolders();
     
     for (const clientFolder of clientFolders) {
-      logger.info(`ðŸ“ Syncing client: ${clientFolder.name}`);
+      logger.info(` Syncing client: ${clientFolder.name}`);
       
       // Get current files from Drive
       const allFiles = await getAllFilesRecursively(drive, clientFolder.id);
@@ -1326,14 +1480,32 @@ async function syncGoogleDriveData() {
         'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
       ];
       
-      const currentFiles = allFiles.filter(file => {
-        const isSupported = supportedTypes.includes(file.mimeType) || 
-                           file.mimeType.includes('document') || 
-                           file.mimeType.includes('presentation') || 
-                           file.mimeType.includes('spreadsheet') ||
-                           file.name.toLowerCase().endsWith('.pdf');
-        return isSupported;
-      });
+      
+
+  __embedCounters.candidates += (Array.isArray(allFiles)? allFiles.length: 0);
+  __embedCounters.supported += (Array.isArray(currentFiles)? currentFiles.length: 0);
+const mt = (file.mimeType || '').toLowerCase();
+  const isSupported = (
+    // Native Google/Office docs
+    mt === 'application/vnd.google-apps.document' ||
+    mt === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+    mt === 'application/vnd.google-apps.presentation' ||
+    mt === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' ||
+    mt === 'application/vnd.google-apps.spreadsheet' ||
+    mt === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+    // Common exports
+    /document|presentation|spreadsheet/.test(mt) ||
+    // Files we want to parse directly
+    /\.(pdf|txt|md|vtt|srt|docx|pptx|xlsx)$/i.test(name) ||
+    mt.startsWith('text/') ||
+    mt === 'application/x-subrip' // .srt
+  );
+  return isSupported;
+};
+
+      __embedCounters.candidates += (Array.isArray(allFiles) ? allFiles.length : 0);
+      __embedCounters.supported += (Array.isArray(currentFiles) ? currentFiles.length : 0);
+      __embedCounters.skippedUnsupported += Math.max(0, (Array.isArray(allFiles)?allFiles.length:0) - (Array.isArray(currentFiles)?currentFiles.length:0));
 
       // Load existing manifest
       const manifestPath = path.join(MANIFEST_DIR, `${clientFolder.id}.json`);
@@ -1372,26 +1544,66 @@ async function syncGoogleDriveData() {
       logger.info(`âœ… Updated manifest for ${clientFolder.name}: ${updatedManifest.files.length} files (${processedCount} processed)`);
 
       // Ingest / embed files to Pinecone when needed
-      const forceReembed = (String(process.env.FORCE_REEMBED||'').toLowerCase()==='true');
-      let upserted = 0;
-      for (const f of updatedManifest.files){
+      const forceReembed = __forceAll || (String(process.env.FORCE_REEMBED||'').toLowerCase()==='true');
+      
+      if (forceReembed) { logger.info('🔁 Manual sync forcing re-embed of all supported files'); }
+// Check if we need to re-embed due to missing folderPath metadata in Pinecone
+      // Create a marker file to track if we've already done the folderPath update
+      const folderPathUpdateMarker = path.join(MANIFEST_DIR, '.folderpath-update-complete');
+      const needsFolderPathUpdate = !forceReembed && !fs.existsSync(folderPathUpdateMarker) && 
+        existingManifest.files.some(f => f.processed && f.folderPath);
+      
+      if (needsFolderPathUpdate) {
+        logger.info('🔄 Detected need for folderPath metadata update in Pinecone embeddings');
+        logger.info('🔄 This is a one-time update to enable project filtering functionality');
+     for (const f of updatedManifest.files){
         const existing = existingManifest.files.find(ef => ef.id === f.id) || {};
-        const changed = forceReembed || !existing.processed || (existing.modifiedTime !== f.modifiedTime);
-        if (!changed) continue;
+        const needsReembed = forceReembed || !existing.processed || (existing.modifiedTime !== f.modifiedTime) || needsFolderPathUpdate;
+      if (!needsReembed) { if (!forceReembed) continue; }
         try{
           const text = await extractTextForEmbedding(f);
           const [vec] = await embedTexts([text]);
-          const meta = { fileId: f.id, fileName: f.name, mimeType: f.mimeType };
-          await pineconeUpsert([{ id: f.id, values: vec, metadata: meta }], clientFolder.id);
-          f.processed = true;
+          const meta = { 
+            fileId: f.id, 
+            fileName: f.name, 
+            mimeType: f.mimeType,
+            folderPath: f.folderPath || '',
+            source: f.name
+const meta = {
+  fileId: f.id,
+  fileName: f.name,
+  folderPath: f.folderPath || 'N/A',
+  modifiedTime: f.modifiedTime || null,
+  clientId,
+  driveFileId: f.id,
+  type:
+    ((f.folderPath || '').toLowerCase().includes('transcript') ||
+     (f.name || '').toLowerCase().includes('transcript') ||
+     (f.name || '').toLowerCase().includes('interview') ||
+     (f.name || '').toLowerCase().includes('focus group') ||
+     (f.name || '').toLowerCase().includes('fg_') ||
+     (f.mimeType || '').startsWith('text/'))
+      ? 'transcript'
+      : 'report',
+};
+          
+          __embedCounters.embedded++;f.processed = true;
           upserted++;
         }catch(e){ logger.warn('Embed failed for', f.name, e?.message||e); }
       }
       writeJSON(manifestPath, updatedManifest);
       logger.info(`📥 Ingest complete for ${clientFolder.name}: ${upserted} files embedded`);
+      logger.info(`🧮 Embed stats: candidates=${__embedCounters.candidates}, supported=${__embedCounters.supported}, embedded=${__embedCounters.embedded}`);
+      
+      // Create marker file if we did a folderPath update
+      if (needsFolderPathUpdate && upserted > 0) {
+        fs.writeFileSync(folderPathUpdateMarker, 'Completed folderPath metadata update');
+        logger.info('✅ FolderPath metadata update completed. Project filtering now enabled.');
+      }
     }
 
-    logger.info("âœ… Google Drive sync completed");
+    FORCE_REEMBED_ON_MANUAL = false;
+    
     
   } catch (error) {
     logger.error("âš  Google Drive sync failed:", error.message);
@@ -1420,8 +1632,7 @@ async function getAllFilesRecursively(drive, folderId, folderPath = '') {
         const subFiles = await getAllFilesRecursively(drive, item.id, subFolderPath);
         allFiles.push(...subFiles);
       } else {
-        allFiles.push({
-          ...item,
+        allFiles.push({...item,
           folderPath: folderPath || 'Root'
         });
       }
@@ -1433,10 +1644,9 @@ async function getAllFilesRecursively(drive, folderId, folderPath = '') {
   return allFiles;
 }
 
-
 // ---- Embedding helpers ----
 async function extractTextForEmbedding(file){
-  // Only implementing PDF robustly; other types fallback to name
+  // Enhanced text extraction for PDFs, Word docs, and plain text files
   try {
     if (file.mimeType === 'application/pdf') {
       const { mod } = await __loadPdfjsFlexible();
@@ -1452,8 +1662,82 @@ async function extractTextForEmbedding(file){
       }
       return text.slice(0, 8000);
     }
+    
+    // Handle Word documents and other Google Docs formats
+    if (file.mimeType === 'application/vnd.google-apps.document' || 
+        file.mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+        file.mimeType === 'application/msword') {
+      try {
+        // For Google Docs, try to export as plain text
+        if (file.mimeType === 'application/vnd.google-apps.document') {
+          const auth = getAuth && typeof getAuth === 'function' ? getAuth() : undefined;
+          const drive = google.drive({ version: 'v3', auth });
+          const exportResponse = await drive.files.export({
+            fileId: file.id,
+            mimeType: 'text/plain'
+          });
+          if (exportResponse.data) {
+            return (file.name + "\n" + exportResponse.data).slice(0, 8000);
+          }
+        }
+      } catch (docError) {
+        logger.warn("Document text extraction failed:", docError.message);
+      }
+    }
+    
+    // Handle plain text files (common for transcripts)
+    if (file.mimeType === 'text/plain' || 
+        file.mimeType === 'text/csv' ||
+        file.name.toLowerCase().endsWith('.txt') ||
+        file.name.toLowerCase().endsWith('.csv')) {
+      try {
+        const bytes = await __downloadDriveFile(file.id);
+        const textContent = Buffer.from(bytes).toString('utf-8');
+        return (file.name + "\n" + textContent).slice(0, 8000);
+      } catch (textError) {
+        logger.warn("Plain text extraction failed:", textError.message);
+      }
+    }
+    
   } catch(e){ logger.warn("extractTextForEmbedding failed:", e?.message||e); }
   return file.name;
+
+    // Handle plain text and transcript-like caption formats
+    if (file.mimeType && (file.mimeType === 'text/plain' || file.mimeType === 'text/vtt' || file.mimeType === 'application/x-subrip')) {
+      try {
+        const buf = await __downloadDriveFile(file.id);
+        let raw = buf.toString('utf8');
+        // If VTT: strip WEBVTT header and timestamps
+        if (file.mimeType === 'text/vtt' || /\.vtt$/i.test(file.name||'')) {
+          raw = raw
+            .replace(/^WEBVTT.*$/gmi, '')
+            .replace(/\d{2}:\d{2}:\d{2}\.\d{3}\s+-->\s+\d{2}:\d{2}:\d{2}\.\d{3}.*$/gmi, '')
+            .replace(/^\d+\s*$/gmi, '');
+        }
+        // If SRT: strip numeric cues and time ranges
+        if (file.mimeType === 'application/x-subrip' || /\.srt$/i.test(file.name||'')) {
+          raw = raw
+            .replace(/^\s*\d+\s*$/gmi, '')
+            .replace(/\d{2}:\d{2}:\d{2},\d{3}\s+-->\s+\d{2}:\d{2}:\d{2},\d{3}.*$/gmi, '');
+        }
+        // Collapse repeated whitespace
+        const text = (file.name + "\n" + raw).replace(/[ \t]+/g,' ').replace(/\n{2,}/g,'\n').slice(0, 8000);
+        return text;
+      } catch (_) {
+        // fall through
+      }
+    }
+    // Handle .txt or .md by extension if mimeType missing/wrong
+    if ((file.name||'').toLowerCase().endsWith('.txt') || (file.name||'').toLowerCase().endsWith('.md')) {
+      try {
+        const buf = await __downloadDriveFile(file.id);
+        const text = (file.name + "\n" + buf.toString('utf8')).slice(0, 8000);
+        return text;
+      } catch (_) {
+        // fall through
+      }
+    }
+    
 }
 
 async function pineconeUpsert(vectors, namespace){
@@ -1469,7 +1753,7 @@ async function pineconeUpsert(vectors, namespace){
 // Auto-sync initialization
 async function initializeAutoSync() {
   if (config.autoIngest.onStart) {
-    logger.info("ðŸš€ Auto-ingest enabled - starting initial sync");
+    logger.info("Auto-ingest enabled - starting initial sync");
     
     setTimeout(async () => {
       try {
@@ -1486,7 +1770,7 @@ async function initializeAutoSync() {
     
     setInterval(async () => {
       try {
-        logger.info("ðŸ”„ Running scheduled sync (recurring)");
+        logger.info(" Running scheduled sync (recurring)");
         await syncGoogleDriveData();
       } catch (error) {
         logger.error("Scheduled sync failed:", error.message);
@@ -1496,7 +1780,6 @@ async function initializeAutoSync() {
 }
 
 // === Helper functions ===
-
 
 // ===== Filename-based tag extraction helpers (clean) =====
 function extractYearFromFileName(name){
@@ -1713,7 +1996,7 @@ app.post("/api/clients", requireAuth, requireAdmin, async (req, res) => {
       return res.status(400).json({ error: "client already exists" });
     }
     const item = { id: name, name, library: library || "—", createdAt: new Date().toISOString() };
-    data.clients = [...(data.clients || []), item];
+    data.clients = [.(data.clients || []), item];
     writeJSON(CLIENTS_PATH, data);
     res.json(item);
   } catch (error) {
@@ -1766,7 +2049,7 @@ app.post("/api/admin/users", requireAuth, requireAdmin, async (req, res) => {
       user.allowedClients = "*";
     }
     
-    usersData.users = [...(usersData.users||[]), user];
+    usersData.users = [.(usersData.users||[]), user];
     writeJSON(USERS_PATH, usersData);
     res.json({ id: user.username, username: user.username, createdAt: user.createdAt });
   } catch (error) {
@@ -1805,6 +2088,15 @@ app.get("/api/admin/accounts", requireAuth, requireAdmin, async (req, res) => {
 app.post("/api/admin/users/create", requireAuth, requireAdmin, async (req, res) => {
   if (!isAdmin(req)) { 
     res.status(403).json({ error: 'Admin access required' }); 
+    return;
+  }
+  
+  // Restrict account creation to production environment only
+  if (isLocal) {
+    res.status(403).json({ 
+      error: 'Account creation is disabled in local development environment',
+      message: 'Account creation is only available on the live production site for security reasons.'
+    }); 
     return;
   }
   
@@ -1871,8 +2163,8 @@ app.post("/admin/manual-sync", requireAuth, requireAdmin, async (req, res) => {
   }
   
   try {
-    logger.info("ðŸ”§ Manual Google Drive sync triggered from admin panel");
-    await syncGoogleDriveData();
+    logger.info(" Manual Google Drive sync triggered from admin panel");
+        const result = await syncGoogleDriveData({ forceAll: true });
     res.json({ 
       success: true,
       message: "Google Drive sync completed successfully", 
@@ -2039,6 +2331,15 @@ app.post('/auth/logout', (req, res) => {
   }
 });
 
+// Client switching endpoint
+app.post('/auth/switch-client', (req, res) => {
+  const { clientId } = req.body || {};
+  if (req.session) {
+    req.session.activeClientId = clientId;
+  }
+  res.json({ ok: true, activeClientId: clientId });
+});
+
 app.post('/auth/change-password', express.json(), async (req,res)=>{
   try{
     const { currentPassword, newPassword } = req.body || {};
@@ -2102,7 +2403,7 @@ app.post("/admin/sync-data", requireAuth, async (req, res) => {
   }
   
   try {
-    logger.info("ðŸ”§ Manual data sync triggered");
+    logger.info(" Manual data sync triggered");
     await syncGoogleDriveData();
     res.json({ 
       message: "Data sync completed successfully", 
@@ -2167,8 +2468,7 @@ app.get("/api/client-manifest/:clientId", async (req, res) => {
       // Filter out any files that might not exist anymore
       const validFiles = manifest.files.filter(file => file && file.name);
       
-      res.json({
-        ...manifest,
+      res.json({...manifest,
         files: validFiles
       });
     } else {
@@ -2286,15 +2586,190 @@ async function listClientFolders(){
 }
 
 app.get("/api/client-libraries", async (req,res)=>{
-  const libs = await listClientFolders();
-  logger.info(`Returning ${libs.length} client libraries`);
-  res.json(libs);
+  try {
+    const now = Date.now();
+    
+    // Check cache first
+    if (CLIENT_LIBRARIES_CACHE.data && (now - CLIENT_LIBRARIES_CACHE.lastUpdated) < CLIENT_LIBRARIES_CACHE.ttl) {
+      logger.info(`Returning ${CLIENT_LIBRARIES_CACHE.data.length} client libraries (cached)`);
+      return res.json(CLIENT_LIBRARIES_CACHE.data);
+    }
+    
+    // Cache miss, fetch fresh data
+    const libs = await listClientFolders();
+    
+    // Update cache
+    CLIENT_LIBRARIES_CACHE.data = libs;
+    CLIENT_LIBRARIES_CACHE.lastUpdated = now;
+    
+    logger.info(`Returning ${libs.length} client libraries (fresh)`);
+    res.json(libs);
+  } catch (error) {
+    logger.error('Error fetching client libraries:', error);
+    res.status(500).json({ error: 'Failed to fetch client libraries' });
+  }
+});
+
+// === NEW BLOCK-FIRST QUERY ENDPOINT (V2 PIPELINE) ===
+app.post("/api/query", requireSession, async (req, res) => {
+  try {
+    const { 
+      query, 
+      clientId, 
+      userId, 
+      sessionId, 
+      stream = true, 
+      topK = 50,
+      forcePlan = null,
+      forceBlocks = null 
+    } = req.body || {};
+
+    if (!query || !String(query).trim()) {
+      return res.status(400).json({ error: "Query is required" });
+    }
+
+    if (!process.env.ANSWER_PIPELINE_V2) {
+      return res.status(503).json({ error: "V2 pipeline not enabled" });
+    }
+
+    const namespace = clientId || req.session?.activeClientId || "sample_client_1";
+    const cleanQuery = String(query).trim();
+
+    if (stream) {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': 'Cache-Control'
+      });
+
+      const sendEvent = (event, data) => {
+        res.write(`event: ${event}\n`);
+        res.write(`data: ${JSON.stringify(data)}\n\n`);
+      };
+
+      try {
+        const classification = await classify(cleanQuery, { clientId: namespace });
+        
+        const palette = {
+          hasCharts: true,
+          hasTables: true,
+          hasText: true,
+          hasQuotes: true,
+          hasSlides: true
+        };
+
+        sendEvent('meta', {
+          phase: 'classify',
+          signals: classification.signals,
+          plan: forcePlan || classification.type,
+          confidence: classification.confidence
+        });
+
+        const plan = await planLayout(cleanQuery, classification.signals, palette);
+
+        sendEvent('plan', {
+          phase: 'plan',
+          layout: plan
+        });
+
+        const bindingGenerator = bind(plan, cleanQuery, namespace, classification.signals);
+        const finalLayout = [...plan];
+
+        for await (const event of bindingGenerator) {
+          if (event.phase === 'partial') {
+            sendEvent('partial', event);
+            
+            if (event.targetIndex !== undefined && event.blocks) {
+              finalLayout[event.targetIndex] = event.blocks.length === 1 ? event.blocks[0] : {
+                kind: 'group',
+                cols: event.blocks.length,
+                blocks: event.blocks
+              };
+            }
+          } else if (event.phase === 'final') {
+            const validatedLayout = validateLayout(finalLayout.filter(Boolean));
+            sendEvent('final', {
+              phase: 'final',
+              type: 'report',
+              layout: validatedLayout,
+              citations: event.citations || []
+            });
+            break;
+          }
+        }
+
+      } catch (error) {
+        logger.error('Streaming query error:', error);
+        sendEvent('error', {
+          phase: 'error',
+          error: error.message
+        });
+      }
+
+      res.end();
+
+    } else {
+      const classification = await classify(cleanQuery, { clientId: namespace });
+      
+      const palette = {
+        hasCharts: true,
+        hasTables: true,
+        hasText: true,
+        hasQuotes: true,
+        hasSlides: true
+      };
+
+      const plan = await planLayout(cleanQuery, classification.signals, palette);
+      const bindingGenerator = bind(plan, cleanQuery, namespace, classification.signals);
+      const finalLayout = [...plan];
+      let citations = [];
+
+      for await (const event of bindingGenerator) {
+        if (event.phase === 'partial' && event.targetIndex !== undefined && event.blocks) {
+          finalLayout[event.targetIndex] = event.blocks.length === 1 ? event.blocks[0] : {
+            kind: 'group',
+            cols: event.blocks.length,
+            blocks: event.blocks
+          };
+        } else if (event.phase === 'final') {
+          citations = event.citations || [];
+          break;
+        }
+      }
+
+      const validatedLayout = validateLayout(finalLayout.filter(Boolean));
+      
+      res.json({
+        type: 'report',
+        layout: validatedLayout,
+        citations
+      });
+    }
+
+  } catch (error) {
+    logger.error('Query API error:', error);
+    res.status(500).json({ error: 'Failed to process query' });
+  }
+});
+
+// Health check for V2 pipeline
+app.get("/api/query/health", (req, res) => {
+  const status = {
+    v2Enabled: !!process.env.ANSWER_PIPELINE_V2,
+    pineconeReady: !!process.env.PINECONE_API_KEY,
+    openaiReady: !!process.env.OPENAI_API_KEY,
+    timestamp: new Date().toISOString()
+  };
+
+  res.json(status);
 });
 
 // MAIN SEARCH ENDPOINT - FIXED for thumbnails and file names
 app.post("/search", requireSession, async (req,res)=>{
   try{
-    const { userQuery, clientId, filters } = req.body || {};
+    const { userQuery, clientId, filters, projectFilter } = req.body || {};
     if(!userQuery || !String(userQuery).trim()) {
       res.status(400).json({ error:"Query is required"});
       return;
@@ -2312,7 +2787,27 @@ app.post("/search", requireSession, async (req,res)=>{
     logger.info("Top scores:", matches.slice(0,5).map(m=> (m.score||0).toFixed(3)).join(", "));
     
     const threshold = config.search.scoreThreshold;
-    let relevantChunks = matches.filter(m=> (m.score||0) >= threshold).map((m,i)=>{
+    
+    // Enrich matches with folderPath/fileName from current manifest if missing
+    try {
+      if (Array.isArray(matches) && CURRENT_MANIFEST && CURRENT_MANIFEST.byFileId) {
+        const byId = CURRENT_MANIFEST.byFileId; // { fileId: { folderPath, name } }
+        for (const m of matches) {
+          const md = m.metadata || (m.metadata = {});
+          const fid = md.fileId || md.driveFileId || md.id || null;
+          if (fid && (!md.folderPath || md.folderPath === 'N/A')) {
+            const mf = byId[fid];
+            if (mf) {
+              md.folderPath = mf.folderPath || md.folderPath;
+              md.fileName = md.fileName || mf.name;
+            }
+          }
+        }
+      }
+    } catch (e) {
+      logger.warn("FolderPath enrichment failed:", e?.message);
+    }
+let relevantChunks = matches.filter(m=> (m.score||0) >= threshold).map((m,i)=>{
       const md = m.metadata||{};
       return {
         id:`ref${i+1}`,
@@ -2454,11 +2949,59 @@ app.post("/search", requireSession, async (req,res)=>{
         logger.info('Manifest filter skipped via SKIP_MANIFEST_FILTER'); 
       }
       logger.info(`After manifest filter: ${relevantChunks.length} chunks`);
+      
+      // PROJECT FILTERING: Filter by specific project if requested
+      if (projectFilter && projectFilter.trim()) {
+        const originalChunkCount = relevantChunks.length;
+        relevantChunks = relevantChunks.filter(chunk => {
+          // Check if the chunk is from files within the project folder structure
+          // Look for the project name in the folder path, not just filename
+          const folderPath = (chunk.folderPath || '').toLowerCase();
+          const fileName = (chunk.fileName || chunk.source || '').toLowerCase();
+          const projectName = projectFilter.toLowerCase().trim();
+          
+          // Check if this file is within the project folder structure
+          // Format: [client folder]/[project name]/[subfolder like QNR, Reports, Data, Transcripts]
+          const isInProjectFolder = folderPath.includes('/' + projectName + '/') || 
+                                   folderPath.includes(projectName + '/') ||
+                                   folderPath.startsWith(projectName + '/') ||
+                                   folderPath === projectName;
+          
+          // Fallback: also check filename for backwards compatibility
+          const isInProjectFile = fileName.includes(projectName);
+          
+          return isInProjectFolder || isInProjectFile;
+        });
+        logger.info(`Project filter "${projectFilter}" applied: ${originalChunkCount} → ${relevantChunks.length} chunks`);
+        
+        // Debug logging to help troubleshoot
+        if (relevantChunks.length === 0 && originalChunkCount > 0) {
+          logger.warn(`No chunks matched project "${projectFilter}". Sample chunk folder paths:`);
+          matches.slice(0, 10).forEach((match, i) => {
+            const folderPath = (match.metadata?.folderPath || 'N/A');
+            const fileName = (match.metadata?.fileName || 'N/A');
+            const fileId = (match.metadata?.fileId || 'N/A');
+            logger.warn(`  ${i+1}. FolderPath: "${folderPath}", FileName: "${fileName}", FileId: "${fileId}"`);
+          });
+          
+          // Let's also check if we have ANY vectors with the expected folderPath
+          logger.warn(`Looking for any chunks that might match folderPath containing "${projectFilter.toLowerCase()}"`);
+          const possibleMatches = matches.filter(match => {
+            const folderPath = (match.metadata?.folderPath || '').toLowerCase();
+            return folderPath.includes(projectFilter.toLowerCase());
+          });
+          logger.warn(`Found ${possibleMatches.length} potential matches with folderPath containing "${projectFilter}"`);
+        }
+      }
     
       // If nothing survives filtering, avoid hallucinations: return a grounded message
       if (!relevantChunks || relevantChunks.length === 0) {
+        const noResultsMessage = projectFilter 
+          ? `I couldn't find grounded content for that question in the "${projectFilter}" project. Try broadening your search or selecting a different project.`
+          : "I couldn't find grounded content in the selected library for that question.";
+        
         res.json({
-          answer: "I couldn't find grounded content in the selected library for that question.",
+          answer: noResultsMessage,
           supporting: [],
           reportSlides: [],
           references: [],
@@ -2477,127 +3020,92 @@ app.post("/search", requireSession, async (req,res)=>{
     let generatedAnswer = "No answer.";
     
     try{
-      const prompt = `You are a research analyst providing direct answers based ONLY on the snippets below.
+      const thinkingLevel = filters?.thinking || 'moderate';
+      logger.info(`Using thinking level: ${thinkingLevel}`);
+      
+      let responseInstructions;
+      switch(thinkingLevel) {
+        case 'concise':
+          responseInstructions = 'Provide a concise, direct answer focusing only on the key points. Keep your response brief and to the point.';
+          break;
+        case 'detailed':
+          responseInstructions = 'Provide a comprehensive, detailed answer that thoroughly explores the topic. Include context, implications, and relevant details from the research.';
+          break;
+        case 'moderate':
+        default:
+          responseInstructions = 'Provide a complete answer with appropriate detail. Include the main findings and sufficient context without being overly lengthy.';
+          break;
+      }
+      
+      const prompt = `Question: ${userQuery}
 
-User Question: "${userQuery}"
-
-Relevant Information from Documents:
+Here is the relevant research information:
 ${context}
 
-Instructions:
-Create a structured answer with:
-1. HEADLINE: A direct, factual answer to the question (NOT a newspaper headline). Start with key findings, percentages, or specific answers.
-2. DETAILS: 2-3 supporting sentences that provide context and evidence with [1], [2] citations
+${responseInstructions}
 
-HEADLINE Examples:
-- "Evrysdi holds 35% market share, followed by Spinraza at 32% and Zolgensma at 13%"
-- "The primary barriers are insurance coverage issues (53%), access concerns (26%), and efficacy questions (16%)"
-- "Treatment effectiveness shows 75% of patients experienced improvement within 6 months"
-
-Format your response as:
-HEADLINE: [Direct answer with key data/findings]
-DETAILS: [Supporting context with citations]
-
-Answer:`;
+Based on this information, please answer the question in a natural, conversational way.`;
+      
+      // Adjust max tokens based on thinking level
+      let maxTokens;
+      switch(thinkingLevel) {
+        case 'concise': maxTokens = 300; break;
+        case 'detailed': maxTokens = 800; break;
+        case 'moderate': 
+        default: maxTokens = 500; break;
+      }
       
       const completion = await openai.chat.completions.create({
         model: config.ai.answerModel,
         messages: [{ role:"user", content: prompt }],
         temperature: 0.2, 
-        max_tokens: 500
+        max_tokens: maxTokens
       });
       generatedAnswer = completion.choices[0]?.message?.content || generatedAnswer;
+      logger.info('RAW AI Response:', JSON.stringify(generatedAnswer));
     }catch(e){
       logger.warn("OpenAI completion failed:", e.message);
-      generatedAnswer = "HEADLINE: Limited evidence found in research library\nDETAILS: Unable to generate comprehensive answer based on available documents.";
+      generatedAnswer = "I wasn't able to find enough information in the research library to provide a comprehensive answer to your question.";
     }
 
-    // Generate supporting themes without duplication
-    let supportingThemes = [];
-    try {
-      const model = config.ai.answerModel;
-      supportingThemes = await buildSupportingThemes(openai, model, userQuery, relevantChunks, { charts: (filters && filters.charts) || 'yes', quotes: (filters && filters.quotes) || 'moderate' });
-      logger.info(`Generated ${supportingThemes.length} supporting themes with proper chart data`);
-    } catch(e) {
-      logger.warn('buildSupportingThemes failed:', e?.message || e);
+    // SIMPLE MODE: Skip theme generation completely
+    logger.info('Simple mode: Skipping theme generation for faster response');
+
+    // SIMPLE MODE: Add quotes if requested
+    let quotes = [];
+    const quotesLevel = filters?.quotes || 'moderate';
+    
+    if (quotesLevel !== 'none') {
+      logger.info(`Processing quotes with level: ${quotesLevel}`);
+      quotes = await extractSupportingQuotes(relevantChunks, userQuery, quotesLevel);
+      logger.info(`Found ${quotes.length} supporting quotes`);
     }
 
-    // Basic themes aggregation for backwards compatibility
-    const byReportType = {};
-    const byYear = {};
-    for (const c of relevantChunks){
-      if (c?.reportTag) byReportType[c.reportTag] = (byReportType[c.reportTag]||0)+1;
-      if (c?.yearTag) byYear[c.yearTag] = (byYear[c.yearTag]||0)+1;
-    }
-
-    const themes = [
-      { key:"byReportType", title:"References by Report Type", type:"bar",
-        data: Object.entries(byReportType).map(([label,value])=>({label,value})).sort((a,b)=>b.value-a.value) },
-      { key:"byYear", title:"References by Year", type:"bar",
-        data: Object.entries(byYear).map(([label,value])=>({label,value})).sort((a,b)=> String(a.label).localeCompare(String(b.label))) },
-    ];
-
-    // FIXED: Generate reports with actual thumbnails (not fallback placeholders)
-    const reports = await (async () => {
-      const arr = (relevantChunks || []).slice(0, 6);
-      const out = [];
-      
-      for (const c of arr) {
-        let thumb = null, preview = null;
-        
-        if (c.fileId) {
-          try {
-            console.log(`[suppressed] Generating thumbnail for: ${c.fileName} (${c.fileId}) page ${c.page}`);
-            thumb = await getPdfThumbnail(c.fileId, c.page || 1);
-            preview = buildDrivePreviewUrl(c.fileId, c.page);
-            console.log(`Thumbnail result: ${thumb ? 'SUCCESS' : 'FAILED'}`);
-          } catch (e) {
-            console.error('Error getting thumbnail for', c.fileId, e);
-          }
-        }
-        
-        // Only include if we have valid data
-        if (c.fileName && c.fileId) {
-          out.push({
-            source: c.fileName,        // Use actual file name from manifest
-            page: c.page || 1,
-            study: c.fileName,         // Use file name as study
-            date: (c.monthTag ? (c.monthTag + ' ') : '') + (c.yearTag || ''),
-            fileId: c.fileId,
-            preview,
-            thumbnail: thumb           // This will be base64 data URL or null
-          });
-        }
-      }
-      
-      console.log(`Generated ${out.length} reports with thumbnails`);
-      return out;
-    })();
-
-    console.log('Debug - Generated reports with thumbnails:', reports);
-    console.log('Debug - First report:', reports[0]);
-
+    // SIMPLE MODE: Return answer with optional quotes
+    logger.info('Simple mode: Returning text-only response with quotes');
     res.json({
-      dashboard: await buildDashboardPayload({answer: generatedAnswer, themes, relevantChunks, mostRecentRef}),
       answer: generatedAnswer,
-      supportingThemes: supportingThemes || [],
-      references: { chunks: relevantChunks },
-      reports,  // This now contains actual thumbnails and correct file names
-      themes,
-      quotes: [], 
-      visuals: [], 
-      supportingData: [], 
-      secondary: [], 
-      supportingBullets: [],
-      searchMeta: { 
-        totalResults: matches.length, 
-        threshold, 
-        usedFallback: relevantChunks.length>0 && (matches[0]?.score||0)<threshold
-      }
+      quotes: quotes,
+      // Empty arrays for compatibility
+      supportingThemes: [],
+      themes: [],
+      reports: [],
+      references: { chunks: [] }
     });
+    return;
   }catch(err){
     logger.error("Search error:", err);
-    res.status(500).json({ error:"Failed to process search query" });
+    logger.error("Search error details:", {
+      message: err.message,
+      stack: err.stack,
+      name: err.name,
+      code: err.code
+    });
+    res.status(500).json({ 
+      error: "Failed to process search query",
+      details: err.message,
+      type: err.name || 'Unknown Error'
+    });
   }
 });
 
@@ -2860,6 +3368,7 @@ app.get("/api/libraries/:id/projects", requireAuth, async (req, res) => {
             QNR: [],
             Data: [],
             Reports: [],
+            Transcripts: [],
             Other: []
           }
         };
@@ -2888,6 +3397,8 @@ app.get("/api/libraries/:id/projects", requireAuth, async (req, res) => {
         projectMap[projectName].folderStructure.Data.push(fileInfo);
       } else if (lowerFolderPath.includes('/reports') || lowerFileName.includes('report')) {
         projectMap[projectName].folderStructure.Reports.push(fileInfo);
+      } else if (lowerFolderPath.includes('/transcript') || lowerFileName.includes('transcript') || lowerFileName.includes('interview') || lowerFileName.includes('focus group') || lowerFileName.includes('fg_')) {
+        projectMap[projectName].folderStructure.Transcripts.push(fileInfo);
       } else {
         projectMap[projectName].folderStructure.Other.push(fileInfo);
       }
@@ -2906,6 +3417,7 @@ app.get("/api/libraries/:id/projects", requireAuth, async (req, res) => {
             QNR: project.folderStructure.QNR.length,
             Data: project.folderStructure.Data.length,  
             Reports: project.folderStructure.Reports.length,
+            Transcripts: project.folderStructure.Transcripts.length,
             Other: project.folderStructure.Other.length
           }
         };
@@ -3190,6 +3702,35 @@ app.get('/secure-slide/:fileId/:page', async (req, res) => {
       return res.status(400).json({ error: 'File ID is required' });
     }
 
+    // Initialize cache if needed
+    await initThumbnailCache();
+
+    // Check cache first
+    const cacheKey = getThumbnailCacheKey(fileId, pageNumber);
+    const cached = THUMBNAIL_CACHE.get(cacheKey);
+    if (cached) {
+      res.set({
+        'Content-Type': 'image/png',
+        'Cache-Control': 'public, max-age=3600'
+      });
+      return res.send(cached);
+    }
+
+    // Check disk cache
+    const diskCachePath = path.join(THUMBNAIL_CACHE_DIR, `${cacheKey}.png`);
+    try {
+      const diskCached = await fsp.readFile(diskCachePath);
+      // Cache in memory for faster access
+      THUMBNAIL_CACHE.set(cacheKey, diskCached);
+      res.set({
+        'Content-Type': 'image/png',
+        'Cache-Control': 'public, max-age=3600'
+      });
+      return res.send(diskCached);
+    } catch (error) {
+      // Not in cache, continue with generation
+    }
+
     // Reuse your existing auth initialization
     if (!authClient) {
       await initializeGoogleAuth();
@@ -3262,6 +3803,15 @@ app.get('/secure-slide/:fileId/:page', async (req, res) => {
     await page.render({ canvasContext: ctx, viewport }).promise;
 
     const buf = canvas.toBuffer('image/png');
+    
+    // Cache the generated thumbnail
+    try {
+      THUMBNAIL_CACHE.set(cacheKey, buf);
+      await fsp.writeFile(diskCachePath, buf);
+    } catch (cacheError) {
+      console.warn('Failed to cache thumbnail:', cacheError.message);
+    }
+    
     res.setHeader('Content-Type', 'image/png');
     res.setHeader('Cache-Control', 'public, max-age=3600, immutable');
     return res.end(buf);
@@ -3272,7 +3822,6 @@ app.get('/secure-slide/:fileId/:page', async (req, res) => {
 }); // <-- keep this exact closing line
 // ---------------------------------------------------------------------------
 
-
 // Health endpoint for slide deps
 
 app.get('/secure-slide/health', async (req, res) => {
@@ -3281,7 +3830,6 @@ app.get('/secure-slide/health', async (req, res) => {
   try { const { mod, variant } = await __loadCanvasFlexible(); out.canvas = !!mod; out.variant.canvas = variant; } catch {}
   res.json(out);
 });
-
 
 app.listen(config.server.port, async ()=>{
     logger.info(`Jaice server running on port ${config.server.port}`);
@@ -3368,7 +3916,6 @@ try {
 } catch(_){}
 
 // TEST-MARKER-JAICE
-
 
 // == JAICE helper datastore ==
 const JAICE_DATA_DIR = path.resolve(process.cwd(), 'data');
@@ -3554,8 +4101,6 @@ app.post('/api/clients', requireAuth, async (req, res) => {
   }
 });
 
-
-
 // ===== Reports API (ESM) — BEGIN (idempotent) =====
 if (!globalThis.__REPORTS_API_INSTALLED__) {
   globalThis.__REPORTS_API_INSTALLED__ = true;
@@ -3658,4 +4203,3 @@ if (!globalThis.__REPORTS_API_INSTALLED__) {
   });
 }
 // ===== Reports API — END =====
-
